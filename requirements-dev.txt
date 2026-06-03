@@ -1,0 +1,6 @@
+-r requirements.txt
+
+black
+grpcio-tools>=1.76.0
+pytest
+pytest-asyncio

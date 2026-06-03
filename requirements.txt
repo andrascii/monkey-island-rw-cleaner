@@ -1,0 +1,11 @@
+grpcio>=1.76.0
+protobuf>=6.31.1,<7
+sqlalchemy[asyncio]
+asyncpg
+alembic
+redis
+orjson
+pydantic
+psycopg2-binary
+pyyaml
+httpx

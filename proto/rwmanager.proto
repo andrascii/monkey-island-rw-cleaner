@@ -1,0 +1,161 @@
+syntax = "proto3";
+package rwmanager;
+
+import "google/protobuf/timestamp.proto";
+
+enum UserStatus {
+  ACTIVE = 0;
+  DISABLED = 1;
+  LIMITED = 2;
+  EXPIRED = 3;
+}
+
+enum TrafficLimitStrategy {
+  NO_RESET = 0;
+  DAY = 1;
+  WEEK = 2;
+  MONTH = 3;
+}
+
+message UserLastConnectedNode {
+  google.protobuf.Timestamp connected_at = 1;
+  string node_name = 2;
+}
+
+message ActiveInternalSquad {
+  string uuid = 1;
+  string name = 2;
+}
+
+message HappCrypto {
+  string crypto_link = 1;
+}
+
+message UserActiveInbound {
+  string uuid = 1;
+  string tag = 2;
+  string type = 3;
+  optional string network = 4;
+  optional string security = 5;
+}
+
+message ErrorInfo {
+  string error_code = 1;
+  int64 status_code = 2;
+  string description = 3;
+}
+
+message UserResponse {
+  string uuid = 1;
+  string subscription_uuid = 2;
+  string short_uuid = 3;
+  string username = 4;
+  optional UserStatus status = 5;
+  double used_traffic_bytes = 6;
+  double lifetime_used_traffic_bytes = 7;
+  optional int64 traffic_limit_bytes = 8;
+  optional TrafficLimitStrategy traffic_limit_strategy = 9;
+  optional string sub_last_user_agent = 10;
+  optional google.protobuf.Timestamp sub_last_opened_at = 11;
+  optional google.protobuf.Timestamp expire_at = 12;
+  optional google.protobuf.Timestamp online_at = 13;
+  optional google.protobuf.Timestamp sub_revoked_at = 14;
+  optional google.protobuf.Timestamp last_traffic_reset_at = 15;
+  string trojan_password = 16;
+  string vless_uuid = 17;
+  string ss_password = 18;
+  optional string description = 19;
+  optional int64 telegram_id = 20;
+  optional string email = 21;
+  optional int32 hwid_device_limit = 22;
+
+  string subscription_url = 23;
+  optional google.protobuf.Timestamp first_connected = 24;
+  optional int64 last_trigger_threshold = 25;
+  optional HappCrypto happ = 26;
+  repeated ActiveInternalSquad active_internal_squads = 27;
+  google.protobuf.Timestamp created_at = 28;
+  google.protobuf.Timestamp updated_at = 29;
+}
+
+message GetUserByUuidRequest {
+  string uuid = 1;
+}
+
+message GetUserByUsernameRequest {
+  string username = 1;
+}
+
+message AddUserRequest {
+  string username = 1;
+  optional string email = 2;
+  optional int64 telegram_id = 3;
+  google.protobuf.Timestamp expire_at = 4;
+  optional google.protobuf.Timestamp created_at = 5;
+  optional google.protobuf.Timestamp last_traffic_reset_at = 6;
+  repeated string active_internal_squads = 7;
+  optional UserStatus status = 8;
+  optional TrafficLimitStrategy traffic_limit_strategy = 9;
+  optional string description = 10;
+  optional string tag = 11;
+  optional int64 hwid_device_limit = 12;
+}
+
+message UpdateUserRequest {
+  string uuid = 1;
+  optional UserStatus status = 2;
+  optional int64 traffic_limit_bytes = 3;
+  optional TrafficLimitStrategy traffic_limit_strategy = 4;
+  optional google.protobuf.Timestamp expire_at = 5;
+  optional google.protobuf.Timestamp last_traffic_reset_at = 6;
+  optional string description = 7;
+  optional string tag = 8;
+  optional int64 telegram_id = 9;
+  optional string email = 10;
+  optional int64 hwid_device_limit = 11;
+  repeated string active_internal_squads = 12;
+}
+
+message GetAllUsersRequest {
+  int64 offset = 1; // default 0
+  int64 count = 2; // default 25
+}
+
+message GetAllUsersReply {
+  repeated UserResponse users = 1;
+  double total = 2;
+}
+
+message DeleteUserRequest {
+  string uuid = 1;
+}
+
+message DeleteUserResponse {
+  bool is_deleted = 1;
+}
+
+message Inbound {
+  string uuid = 1;
+  string tag = 2;
+  string type = 3;
+  double port = 4;
+  optional string network = 5;
+  optional string security = 6;
+}
+
+message GetInboundsResponse {
+  repeated Inbound inbounds = 1;
+}
+
+message Empty {}
+
+service RwManager {
+  rpc GetUserByUuid(GetUserByUuidRequest) returns (UserResponse) {}
+  rpc GetUserByUsername(GetUserByUsernameRequest) returns (UserResponse) {}
+  rpc AddUser(AddUserRequest) returns (UserResponse) {}
+  rpc UpdateUser(UpdateUserRequest) returns (UserResponse) {}
+  rpc GetAllUsers(GetAllUsersRequest) returns (GetAllUsersReply) {}
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {}
+
+  rpc GetInbounds(Empty) returns (GetInboundsResponse) {}
+}
