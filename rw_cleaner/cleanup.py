@@ -11,7 +11,6 @@ from typing import Optional
 import grpc
 from sqlalchemy import create_engine
 from sqlalchemy import exists
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
@@ -307,7 +306,10 @@ def decide_cleanup(
 
 
 def verify_still_eligible(
-    client: RwmsCleanerClient, db: Session, decision: CleanupDecision
+    client: RwmsCleanerClient,
+    db: Session,
+    decision: CleanupDecision,
+    config: CleanerConfig,
 ) -> bool:
     try:
         fresh_user = rwms_user_from_proto(
@@ -343,24 +345,25 @@ def verify_still_eligible(
         )
         return False
 
-    if decision.local_user_id is not None:
-        fresh_local = db.query(User).filter(User.id == decision.local_user_id).first()
-        if fresh_local is None:
-            logger.error(
-                "local user disappeared before delete user_id=%s username=%s",
-                decision.local_user_id,
-                decision.rwms_user.username,
-            )
-            return False
-        fresh_expire = as_utc(fresh_local.expire_at)
-        if fresh_expire is not None and fresh_expire >= utc_now():
-            logger.error(
-                "local user became active before delete username=%s user_id=%s expire_at=%s",
-                decision.rwms_user.username,
-                decision.local_user_id,
-                fresh_expire,
-            )
-            return False
+    fresh_decision = decide_cleanup(db, fresh_user, config)
+    if not fresh_decision.should_delete:
+        logger.error(
+            "candidate is no longer eligible before delete username=%s uuid=%s reason=%s",
+            decision.rwms_user.username,
+            decision.rwms_user.uuid,
+            fresh_decision.reason,
+        )
+        return False
+
+    if fresh_decision.local_user_id != decision.local_user_id:
+        logger.error(
+            "local user mapping changed before delete username=%s uuid=%s old_user_id=%s new_user_id=%s",
+            decision.rwms_user.username,
+            decision.rwms_user.uuid,
+            decision.local_user_id,
+            fresh_decision.local_user_id,
+        )
+        return False
 
     return True
 
@@ -424,7 +427,7 @@ def run_cleanup(config: CleanerConfig) -> CleanupSummary:
                     )
                     continue
 
-                if not verify_still_eligible(rwms_client, db, decision):
+                if not verify_still_eligible(rwms_client, db, decision, config):
                     summary.failed += 1
                     continue
 
@@ -473,13 +476,6 @@ def run_cleanup(config: CleanerConfig) -> CleanupSummary:
     return summary
 
 
-def env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on", "да", "вкл"}
-
-
 def env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if not value:
@@ -513,13 +509,13 @@ def parse_args(argv: Optional[list[str]] = None) -> CleanerConfig:
     parser.add_argument(
         "--execute",
         action="store_true",
-        default=env_bool("EXECUTE", False),
+        default=False,
         help="Actually delete users from RWMS. Default is dry-run.",
     )
     parser.add_argument(
         "--include-orphans",
         action="store_true",
-        default=env_bool("INCLUDE_ORPHANS", False),
+        default=False,
         help="Allow deleting RWMS users that have no local users row.",
     )
     parser.add_argument(
