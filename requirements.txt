@@ -1,11 +1,16 @@
-grpcio>=1.76.0
-protobuf>=6.31.1,<7
-sqlalchemy[asyncio]
-asyncpg
-alembic
-redis
-orjson
-pydantic
-psycopg2-binary
-pyyaml
-httpx
+# Все версии запинены (инцидент 2026-07-07: незапиненный remnawave в rwms
+# притянул 2.8.0 с breaking change). Обновлять версии только осознанно,
+# с прогоном тестов, а не через пересборку Docker-образа.
+# Локального .venv у сервиса не было — версии взяты из venv соседних
+# сервисов Monkey Island (тот же согласованный набор зависимостей).
+grpcio==1.81.1
+protobuf==6.33.6
+sqlalchemy[asyncio]==2.0.50
+asyncpg==0.31.0
+alembic==1.18.4
+redis==8.0.0
+orjson==3.11.9
+pydantic==2.13.4
+psycopg2-binary==2.9.12
+pyyaml==6.0.3
+httpx==0.28.1
