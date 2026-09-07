@@ -101,6 +101,23 @@ pytest
 
 
 
+## Стабы RWMS
+
+`proto/rwmanager.proto` — копия из `monkey-island-rwms/proto/`; стабы
+`proto/rwmanager_pb2*.py` генерируются ТОЛЬКО собственным `.venv` по пинам
+`requirements-dev.txt` (`grpcio-tools==1.81.1`, `protobuf==6.33.6`):
+
+```bash
+cp ../monkey-island-rwms/proto/rwmanager.proto proto/rwmanager.proto
+PATH="$PWD/.venv/bin:$PATH" ./makepb.sh
+```
+
+`rwmanager_pb2_grpc.py` несёт `GRPC_GENERATED_VERSION` и при runtime
+grpcio старше сгенерированной версии роняет импорт `RuntimeError`, поэтому
+стабы из website/vpn-bot (grpcio 1.81.0) сюда не копировать. С 2026-09
+proto знает `TrafficLimitStrategy.MONTH_ROLLING = 4` (антиабьюз) — без
+нового стаба значение из панели приходило бы как неизвестный enum.
+
 ## Зависимости
 
 Все прямые зависимости в `requirements.txt` запинены на точные версии (инцидент 2026-07-07: незапиненный `remnawave` в rwms при пересборке Docker-образа притянул 2.8.0 с breaking change, и бот показывал всем пользователям, что срок ключа истёк). Пересборка образа не должна молча подтягивать новые версии. Обновление любой версии — осознанное изменение: поднять пин в `requirements.txt`, прогнать тесты и проверить согласованность со смежными сервисами.

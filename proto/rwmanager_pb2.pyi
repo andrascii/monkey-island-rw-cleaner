@@ -23,6 +23,7 @@ class TrafficLimitStrategy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DAY: _ClassVar[TrafficLimitStrategy]
     WEEK: _ClassVar[TrafficLimitStrategy]
     MONTH: _ClassVar[TrafficLimitStrategy]
+    MONTH_ROLLING: _ClassVar[TrafficLimitStrategy]
 ACTIVE: UserStatus
 DISABLED: UserStatus
 LIMITED: UserStatus
@@ -31,6 +32,7 @@ NO_RESET: TrafficLimitStrategy
 DAY: TrafficLimitStrategy
 WEEK: TrafficLimitStrategy
 MONTH: TrafficLimitStrategy
+MONTH_ROLLING: TrafficLimitStrategy
 
 class UserLastConnectedNode(_message.Message):
     __slots__ = ("connected_at", "node_name")
@@ -152,8 +154,14 @@ class GetUserByUsernameRequest(_message.Message):
     username: str
     def __init__(self, username: _Optional[str] = ...) -> None: ...
 
+class GetUserByIdRequest(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    def __init__(self, id: _Optional[int] = ...) -> None: ...
+
 class AddUserRequest(_message.Message):
-    __slots__ = ("username", "email", "telegram_id", "expire_at", "created_at", "last_traffic_reset_at", "active_internal_squads", "status", "traffic_limit_strategy", "description", "tag", "hwid_device_limit")
+    __slots__ = ("username", "email", "telegram_id", "expire_at", "created_at", "last_traffic_reset_at", "active_internal_squads", "status", "traffic_limit_strategy", "description", "tag", "hwid_device_limit", "traffic_limit_bytes")
     USERNAME_FIELD_NUMBER: _ClassVar[int]
     EMAIL_FIELD_NUMBER: _ClassVar[int]
     TELEGRAM_ID_FIELD_NUMBER: _ClassVar[int]
@@ -166,6 +174,7 @@ class AddUserRequest(_message.Message):
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     TAG_FIELD_NUMBER: _ClassVar[int]
     HWID_DEVICE_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    TRAFFIC_LIMIT_BYTES_FIELD_NUMBER: _ClassVar[int]
     username: str
     email: str
     telegram_id: int
@@ -178,7 +187,8 @@ class AddUserRequest(_message.Message):
     description: str
     tag: str
     hwid_device_limit: int
-    def __init__(self, username: _Optional[str] = ..., email: _Optional[str] = ..., telegram_id: _Optional[int] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., active_internal_squads: _Optional[_Iterable[str]] = ..., status: _Optional[_Union[UserStatus, str]] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., description: _Optional[str] = ..., tag: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ...) -> None: ...
+    traffic_limit_bytes: int
+    def __init__(self, username: _Optional[str] = ..., email: _Optional[str] = ..., telegram_id: _Optional[int] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., active_internal_squads: _Optional[_Iterable[str]] = ..., status: _Optional[_Union[UserStatus, str]] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., description: _Optional[str] = ..., tag: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., traffic_limit_bytes: _Optional[int] = ...) -> None: ...
 
 class UpdateUserRequest(_message.Message):
     __slots__ = ("uuid", "status", "traffic_limit_bytes", "traffic_limit_strategy", "expire_at", "last_traffic_reset_at", "description", "tag", "telegram_id", "email", "hwid_device_limit", "active_internal_squads")
@@ -261,3 +271,135 @@ class GetInboundsResponse(_message.Message):
 class Empty(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class Node(_message.Message):
+    __slots__ = ("uuid", "name", "address", "is_connected", "is_disabled", "country_code", "config_profile_uuid", "active_inbound_uuids")
+    UUID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    IS_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    IS_DISABLED_FIELD_NUMBER: _ClassVar[int]
+    COUNTRY_CODE_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_PROFILE_UUID_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_INBOUND_UUIDS_FIELD_NUMBER: _ClassVar[int]
+    uuid: str
+    name: str
+    address: str
+    is_connected: bool
+    is_disabled: bool
+    country_code: str
+    config_profile_uuid: str
+    active_inbound_uuids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, uuid: _Optional[str] = ..., name: _Optional[str] = ..., address: _Optional[str] = ..., is_connected: _Optional[bool] = ..., is_disabled: _Optional[bool] = ..., country_code: _Optional[str] = ..., config_profile_uuid: _Optional[str] = ..., active_inbound_uuids: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class GetNodesResponse(_message.Message):
+    __slots__ = ("nodes",)
+    NODES_FIELD_NUMBER: _ClassVar[int]
+    nodes: _containers.RepeatedCompositeFieldContainer[Node]
+    def __init__(self, nodes: _Optional[_Iterable[_Union[Node, _Mapping]]] = ...) -> None: ...
+
+class GetNodeUsersUsageRequest(_message.Message):
+    __slots__ = ("node_uuid", "start", "end")
+    NODE_UUID_FIELD_NUMBER: _ClassVar[int]
+    START_FIELD_NUMBER: _ClassVar[int]
+    END_FIELD_NUMBER: _ClassVar[int]
+    node_uuid: str
+    start: _timestamp_pb2.Timestamp
+    end: _timestamp_pb2.Timestamp
+    def __init__(self, node_uuid: _Optional[str] = ..., start: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., end: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class NodeUserUsage(_message.Message):
+    __slots__ = ("user_uuid", "username", "total_bytes", "date")
+    USER_UUID_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
+    DATE_FIELD_NUMBER: _ClassVar[int]
+    user_uuid: str
+    username: str
+    total_bytes: int
+    date: str
+    def __init__(self, user_uuid: _Optional[str] = ..., username: _Optional[str] = ..., total_bytes: _Optional[int] = ..., date: _Optional[str] = ...) -> None: ...
+
+class GetNodeUsersUsageResponse(_message.Message):
+    __slots__ = ("items",)
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[NodeUserUsage]
+    def __init__(self, items: _Optional[_Iterable[_Union[NodeUserUsage, _Mapping]]] = ...) -> None: ...
+
+class GetNodeSecretResponse(_message.Message):
+    __slots__ = ("secret_key",)
+    SECRET_KEY_FIELD_NUMBER: _ClassVar[int]
+    secret_key: str
+    def __init__(self, secret_key: _Optional[str] = ...) -> None: ...
+
+class CreateNodeRequest(_message.Message):
+    __slots__ = ("name", "address", "port", "country_code", "config_profile_uuid", "inbound_uuids")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    PORT_FIELD_NUMBER: _ClassVar[int]
+    COUNTRY_CODE_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_PROFILE_UUID_FIELD_NUMBER: _ClassVar[int]
+    INBOUND_UUIDS_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    address: str
+    port: int
+    country_code: str
+    config_profile_uuid: str
+    inbound_uuids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, name: _Optional[str] = ..., address: _Optional[str] = ..., port: _Optional[int] = ..., country_code: _Optional[str] = ..., config_profile_uuid: _Optional[str] = ..., inbound_uuids: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class HwidDevice(_message.Message):
+    __slots__ = ("hwid", "platform", "os_version", "device_model", "user_agent", "created_at", "updated_at")
+    HWID_FIELD_NUMBER: _ClassVar[int]
+    PLATFORM_FIELD_NUMBER: _ClassVar[int]
+    OS_VERSION_FIELD_NUMBER: _ClassVar[int]
+    DEVICE_MODEL_FIELD_NUMBER: _ClassVar[int]
+    USER_AGENT_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    hwid: str
+    platform: str
+    os_version: str
+    device_model: str
+    user_agent: str
+    created_at: _timestamp_pb2.Timestamp
+    updated_at: _timestamp_pb2.Timestamp
+    def __init__(self, hwid: _Optional[str] = ..., platform: _Optional[str] = ..., os_version: _Optional[str] = ..., device_model: _Optional[str] = ..., user_agent: _Optional[str] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class GetUserHwidDevicesRequest(_message.Message):
+    __slots__ = ("user_uuid",)
+    USER_UUID_FIELD_NUMBER: _ClassVar[int]
+    user_uuid: str
+    def __init__(self, user_uuid: _Optional[str] = ...) -> None: ...
+
+class GetUserHwidDevicesResponse(_message.Message):
+    __slots__ = ("total", "devices")
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    DEVICES_FIELD_NUMBER: _ClassVar[int]
+    total: int
+    devices: _containers.RepeatedCompositeFieldContainer[HwidDevice]
+    def __init__(self, total: _Optional[int] = ..., devices: _Optional[_Iterable[_Union[HwidDevice, _Mapping]]] = ...) -> None: ...
+
+class DeleteUserHwidDeviceRequest(_message.Message):
+    __slots__ = ("user_uuid", "hwid")
+    USER_UUID_FIELD_NUMBER: _ClassVar[int]
+    HWID_FIELD_NUMBER: _ClassVar[int]
+    user_uuid: str
+    hwid: str
+    def __init__(self, user_uuid: _Optional[str] = ..., hwid: _Optional[str] = ...) -> None: ...
+
+class DeleteUserHwidDeviceResponse(_message.Message):
+    __slots__ = ("total", "devices")
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    DEVICES_FIELD_NUMBER: _ClassVar[int]
+    total: int
+    devices: _containers.RepeatedCompositeFieldContainer[HwidDevice]
+    def __init__(self, total: _Optional[int] = ..., devices: _Optional[_Iterable[_Union[HwidDevice, _Mapping]]] = ...) -> None: ...
+
+class GetHwidSettingsResponse(_message.Message):
+    __slots__ = ("enabled", "fallback_device_limit")
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    FALLBACK_DEVICE_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    fallback_device_limit: int
+    def __init__(self, enabled: _Optional[bool] = ..., fallback_device_limit: _Optional[int] = ...) -> None: ...

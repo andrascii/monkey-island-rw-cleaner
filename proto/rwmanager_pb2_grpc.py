@@ -5,7 +5,7 @@ import warnings
 
 from proto import rwmanager_pb2 as proto_dot_rwmanager__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -44,6 +44,11 @@ class RwManagerStub:
                 request_serializer=proto_dot_rwmanager__pb2.GetUserByUsernameRequest.SerializeToString,
                 response_deserializer=proto_dot_rwmanager__pb2.UserResponse.FromString,
                 _registered_method=True)
+        self.GetUserById = channel.unary_unary(
+                '/rwmanager.RwManager/GetUserById',
+                request_serializer=proto_dot_rwmanager__pb2.GetUserByIdRequest.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.UserResponse.FromString,
+                _registered_method=True)
         self.AddUser = channel.unary_unary(
                 '/rwmanager.RwManager/AddUser',
                 request_serializer=proto_dot_rwmanager__pb2.AddUserRequest.SerializeToString,
@@ -69,6 +74,41 @@ class RwManagerStub:
                 request_serializer=proto_dot_rwmanager__pb2.Empty.SerializeToString,
                 response_deserializer=proto_dot_rwmanager__pb2.GetInboundsResponse.FromString,
                 _registered_method=True)
+        self.GetNodes = channel.unary_unary(
+                '/rwmanager.RwManager/GetNodes',
+                request_serializer=proto_dot_rwmanager__pb2.Empty.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.GetNodesResponse.FromString,
+                _registered_method=True)
+        self.GetNodeUsersUsage = channel.unary_unary(
+                '/rwmanager.RwManager/GetNodeUsersUsage',
+                request_serializer=proto_dot_rwmanager__pb2.GetNodeUsersUsageRequest.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.GetNodeUsersUsageResponse.FromString,
+                _registered_method=True)
+        self.GetNodeSecret = channel.unary_unary(
+                '/rwmanager.RwManager/GetNodeSecret',
+                request_serializer=proto_dot_rwmanager__pb2.Empty.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.GetNodeSecretResponse.FromString,
+                _registered_method=True)
+        self.CreateNode = channel.unary_unary(
+                '/rwmanager.RwManager/CreateNode',
+                request_serializer=proto_dot_rwmanager__pb2.CreateNodeRequest.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.Node.FromString,
+                _registered_method=True)
+        self.GetUserHwidDevices = channel.unary_unary(
+                '/rwmanager.RwManager/GetUserHwidDevices',
+                request_serializer=proto_dot_rwmanager__pb2.GetUserHwidDevicesRequest.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.GetUserHwidDevicesResponse.FromString,
+                _registered_method=True)
+        self.DeleteUserHwidDevice = channel.unary_unary(
+                '/rwmanager.RwManager/DeleteUserHwidDevice',
+                request_serializer=proto_dot_rwmanager__pb2.DeleteUserHwidDeviceRequest.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.DeleteUserHwidDeviceResponse.FromString,
+                _registered_method=True)
+        self.GetHwidSettings = channel.unary_unary(
+                '/rwmanager.RwManager/GetHwidSettings',
+                request_serializer=proto_dot_rwmanager__pb2.Empty.SerializeToString,
+                response_deserializer=proto_dot_rwmanager__pb2.GetHwidSettingsResponse.FromString,
+                _registered_method=True)
 
 
 class RwManagerServicer:
@@ -81,6 +121,12 @@ class RwManagerServicer:
         raise NotImplementedError('Method not implemented!')
 
     def GetUserByUsername(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetUserById(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -116,6 +162,56 @@ class RwManagerServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetNodes(self, request, context):
+        """Read-only статистика для поиска аномального потребления трафика
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetNodeUsersUsage(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetNodeSecret(self, request, context):
+        """Автоматизация установки нод через админку сайта.
+        GetNodeSecret отдаёт панельный ключ (keygen), CreateNode идемпотентно
+        создаёт ноду (существующая с тем же именем/адресом возвращается как есть).
+        Удаления нод здесь нет намеренно (Remnawave Safety Rules).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateNode(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetUserHwidDevices(self, request, context):
+        """HWID-устройства подписки: список и удаление одного устройства из кабинета.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteUserHwidDevice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHwidSettings(self, request, context):
+        """Панельные настройки HWID: нужны кабинету, чтобы показать реальный
+        лимит устройств подписки, когда личный hwid_device_limit не задан.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RwManagerServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -127,6 +223,11 @@ def add_RwManagerServicer_to_server(servicer, server):
             'GetUserByUsername': grpc.unary_unary_rpc_method_handler(
                     servicer.GetUserByUsername,
                     request_deserializer=proto_dot_rwmanager__pb2.GetUserByUsernameRequest.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.UserResponse.SerializeToString,
+            ),
+            'GetUserById': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetUserById,
+                    request_deserializer=proto_dot_rwmanager__pb2.GetUserByIdRequest.FromString,
                     response_serializer=proto_dot_rwmanager__pb2.UserResponse.SerializeToString,
             ),
             'AddUser': grpc.unary_unary_rpc_method_handler(
@@ -153,6 +254,41 @@ def add_RwManagerServicer_to_server(servicer, server):
                     servicer.GetInbounds,
                     request_deserializer=proto_dot_rwmanager__pb2.Empty.FromString,
                     response_serializer=proto_dot_rwmanager__pb2.GetInboundsResponse.SerializeToString,
+            ),
+            'GetNodes': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetNodes,
+                    request_deserializer=proto_dot_rwmanager__pb2.Empty.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.GetNodesResponse.SerializeToString,
+            ),
+            'GetNodeUsersUsage': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetNodeUsersUsage,
+                    request_deserializer=proto_dot_rwmanager__pb2.GetNodeUsersUsageRequest.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.GetNodeUsersUsageResponse.SerializeToString,
+            ),
+            'GetNodeSecret': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetNodeSecret,
+                    request_deserializer=proto_dot_rwmanager__pb2.Empty.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.GetNodeSecretResponse.SerializeToString,
+            ),
+            'CreateNode': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateNode,
+                    request_deserializer=proto_dot_rwmanager__pb2.CreateNodeRequest.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.Node.SerializeToString,
+            ),
+            'GetUserHwidDevices': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetUserHwidDevices,
+                    request_deserializer=proto_dot_rwmanager__pb2.GetUserHwidDevicesRequest.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.GetUserHwidDevicesResponse.SerializeToString,
+            ),
+            'DeleteUserHwidDevice': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteUserHwidDevice,
+                    request_deserializer=proto_dot_rwmanager__pb2.DeleteUserHwidDeviceRequest.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.DeleteUserHwidDeviceResponse.SerializeToString,
+            ),
+            'GetHwidSettings': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHwidSettings,
+                    request_deserializer=proto_dot_rwmanager__pb2.Empty.FromString,
+                    response_serializer=proto_dot_rwmanager__pb2.GetHwidSettingsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -208,6 +344,33 @@ class RwManager:
             target,
             '/rwmanager.RwManager/GetUserByUsername',
             proto_dot_rwmanager__pb2.GetUserByUsernameRequest.SerializeToString,
+            proto_dot_rwmanager__pb2.UserResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetUserById(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/GetUserById',
+            proto_dot_rwmanager__pb2.GetUserByIdRequest.SerializeToString,
             proto_dot_rwmanager__pb2.UserResponse.FromString,
             options,
             channel_credentials,
@@ -344,6 +507,195 @@ class RwManager:
             '/rwmanager.RwManager/GetInbounds',
             proto_dot_rwmanager__pb2.Empty.SerializeToString,
             proto_dot_rwmanager__pb2.GetInboundsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetNodes(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/GetNodes',
+            proto_dot_rwmanager__pb2.Empty.SerializeToString,
+            proto_dot_rwmanager__pb2.GetNodesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetNodeUsersUsage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/GetNodeUsersUsage',
+            proto_dot_rwmanager__pb2.GetNodeUsersUsageRequest.SerializeToString,
+            proto_dot_rwmanager__pb2.GetNodeUsersUsageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetNodeSecret(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/GetNodeSecret',
+            proto_dot_rwmanager__pb2.Empty.SerializeToString,
+            proto_dot_rwmanager__pb2.GetNodeSecretResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateNode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/CreateNode',
+            proto_dot_rwmanager__pb2.CreateNodeRequest.SerializeToString,
+            proto_dot_rwmanager__pb2.Node.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetUserHwidDevices(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/GetUserHwidDevices',
+            proto_dot_rwmanager__pb2.GetUserHwidDevicesRequest.SerializeToString,
+            proto_dot_rwmanager__pb2.GetUserHwidDevicesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteUserHwidDevice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/DeleteUserHwidDevice',
+            proto_dot_rwmanager__pb2.DeleteUserHwidDeviceRequest.SerializeToString,
+            proto_dot_rwmanager__pb2.DeleteUserHwidDeviceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHwidSettings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rwmanager.RwManager/GetHwidSettings',
+            proto_dot_rwmanager__pb2.Empty.SerializeToString,
+            proto_dot_rwmanager__pb2.GetHwidSettingsResponse.FromString,
             options,
             channel_credentials,
             insecure,

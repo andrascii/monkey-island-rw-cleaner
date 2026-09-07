@@ -10,11 +10,14 @@ enum UserStatus {
   EXPIRED = 3;
 }
 
+// Стратегия сброса трафика, как в панели Remnawave: никогда / ежедневно /
+// еженедельно / ежемесячно / ежемесячно по дате создания подписки.
 enum TrafficLimitStrategy {
   NO_RESET = 0;
   DAY = 1;
   WEEK = 2;
   MONTH = 3;
+  MONTH_ROLLING = 4;
 }
 
 message UserLastConnectedNode {
@@ -86,6 +89,12 @@ message GetUserByUsernameRequest {
   string username = 1;
 }
 
+// Числовой ID пользователя в панели Remnawave (колонка ID в UI). Именно он
+// пишется в поле email access-лога xray, поэтому ip-guard оперирует им.
+message GetUserByIdRequest {
+  int64 id = 1;
+}
+
 message AddUserRequest {
   string username = 1;
   optional string email = 2;
@@ -99,6 +108,10 @@ message AddUserRequest {
   optional string description = 10;
   optional string tag = 11;
   optional int64 hwid_device_limit = 12;
+  // Лимит трафика в байтах при создании подписки (антиабьюз пробных
+  // подписок, включается настройкой сайта trial_traffic_limit_enabled).
+  // Не задано — панель создаёт подписку без лимита, как раньше.
+  optional int64 traffic_limit_bytes = 13;
 }
 
 message UpdateUserRequest {
@@ -149,13 +162,124 @@ message GetInboundsResponse {
 
 message Empty {}
 
+message Node {
+  string uuid = 1;
+  string name = 2;
+  string address = 3;
+  bool is_connected = 4;
+  bool is_disabled = 5;
+  optional string country_code = 6;
+  // Конфиг-профиль ноды: нужен админке сайта, чтобы создавать новую ноду
+  // "как существующую" (CreateNode требует профиль и список inbound'ов).
+  optional string config_profile_uuid = 7;
+  repeated string active_inbound_uuids = 8;
+}
+
+message GetNodesResponse {
+  repeated Node nodes = 1;
+}
+
+message GetNodeUsersUsageRequest {
+  string node_uuid = 1;
+  google.protobuf.Timestamp start = 2;
+  google.protobuf.Timestamp end = 3;
+}
+
+// Трафик пользователя на ноде за один день (агрегация панели Remnawave)
+message NodeUserUsage {
+  string user_uuid = 1;
+  string username = 2;
+  int64 total_bytes = 3;
+  string date = 4;
+}
+
+message GetNodeUsersUsageResponse {
+  repeated NodeUserUsage items = 1;
+}
+
+// Панельный ключ для remnanode (SECRET_KEY в docker-compose ноды).
+// Один и тот же для всех нод, к записи ноды в панели не привязан.
+message GetNodeSecretResponse {
+  string secret_key = 1;
+}
+
+message CreateNodeRequest {
+  string name = 1;
+  string address = 2;
+  int32 port = 3;
+  optional string country_code = 4;
+  string config_profile_uuid = 5;
+  repeated string inbound_uuids = 6;
+}
+
+
+// --- HWID-устройства подписки (личный кабинет) ---
+// Только чтение списка и точечное удаление устройства по явному действию
+// владельца подписки. Управление самой подпиской здесь отсутствует намеренно.
+message HwidDevice {
+  string hwid = 1;
+  optional string platform = 2;
+  optional string os_version = 3;
+  optional string device_model = 4;
+  optional string user_agent = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message GetUserHwidDevicesRequest {
+  string user_uuid = 1;
+}
+
+message GetUserHwidDevicesResponse {
+  int64 total = 1;
+  repeated HwidDevice devices = 2;
+}
+
+message DeleteUserHwidDeviceRequest {
+  string user_uuid = 1;
+  string hwid = 2;
+}
+
+message DeleteUserHwidDeviceResponse {
+  int64 total = 1;
+  repeated HwidDevice devices = 2;
+}
+
+// Панельные настройки HWID (из /api/subscription-settings панели):
+// enabled — включён ли учёт устройств, fallback_device_limit — глобальный
+// лимит устройств для подписок без личного hwid_device_limit.
+message GetHwidSettingsResponse {
+  bool enabled = 1;
+  optional int64 fallback_device_limit = 2;
+}
+
 service RwManager {
   rpc GetUserByUuid(GetUserByUuidRequest) returns (UserResponse) {}
   rpc GetUserByUsername(GetUserByUsernameRequest) returns (UserResponse) {}
+  rpc GetUserById(GetUserByIdRequest) returns (UserResponse) {}
   rpc AddUser(AddUserRequest) returns (UserResponse) {}
   rpc UpdateUser(UpdateUserRequest) returns (UserResponse) {}
   rpc GetAllUsers(GetAllUsersRequest) returns (GetAllUsersReply) {}
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {}
 
   rpc GetInbounds(Empty) returns (GetInboundsResponse) {}
+
+  // Read-only статистика для поиска аномального потребления трафика
+  rpc GetNodes(Empty) returns (GetNodesResponse) {}
+  rpc GetNodeUsersUsage(GetNodeUsersUsageRequest) returns (GetNodeUsersUsageResponse) {}
+
+  // Автоматизация установки нод через админку сайта.
+  // GetNodeSecret отдаёт панельный ключ (keygen), CreateNode идемпотентно
+  // создаёт ноду (существующая с тем же именем/адресом возвращается как есть).
+  // Удаления нод здесь нет намеренно (Remnawave Safety Rules).
+  rpc GetNodeSecret(Empty) returns (GetNodeSecretResponse) {}
+  rpc CreateNode(CreateNodeRequest) returns (Node) {}
+
+  // HWID-устройства подписки: список и удаление одного устройства из кабинета.
+  rpc GetUserHwidDevices(GetUserHwidDevicesRequest) returns (GetUserHwidDevicesResponse) {}
+  rpc DeleteUserHwidDevice(DeleteUserHwidDeviceRequest) returns (DeleteUserHwidDeviceResponse) {}
+
+  // Панельные настройки HWID: нужны кабинету, чтобы показать реальный
+  // лимит устройств подписки, когда личный hwid_device_limit не задан.
+  rpc GetHwidSettings(Empty) returns (GetHwidSettingsResponse) {}
 }
