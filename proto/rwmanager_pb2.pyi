@@ -81,7 +81,7 @@ class ErrorInfo(_message.Message):
     def __init__(self, error_code: _Optional[str] = ..., status_code: _Optional[int] = ..., description: _Optional[str] = ...) -> None: ...
 
 class UserResponse(_message.Message):
-    __slots__ = ("uuid", "subscription_uuid", "short_uuid", "username", "status", "used_traffic_bytes", "lifetime_used_traffic_bytes", "traffic_limit_bytes", "traffic_limit_strategy", "sub_last_user_agent", "sub_last_opened_at", "expire_at", "online_at", "sub_revoked_at", "last_traffic_reset_at", "trojan_password", "vless_uuid", "ss_password", "description", "telegram_id", "email", "hwid_device_limit", "subscription_url", "first_connected", "last_trigger_threshold", "happ", "active_internal_squads", "created_at", "updated_at")
+    __slots__ = ("uuid", "subscription_uuid", "short_uuid", "username", "status", "used_traffic_bytes", "lifetime_used_traffic_bytes", "traffic_limit_bytes", "traffic_limit_strategy", "sub_last_user_agent", "sub_last_opened_at", "expire_at", "online_at", "sub_revoked_at", "last_traffic_reset_at", "trojan_password", "vless_uuid", "ss_password", "description", "telegram_id", "email", "hwid_device_limit", "subscription_url", "first_connected", "last_trigger_threshold", "happ", "active_internal_squads", "created_at", "updated_at", "tag", "external_squad_uuid")
     UUID_FIELD_NUMBER: _ClassVar[int]
     SUBSCRIPTION_UUID_FIELD_NUMBER: _ClassVar[int]
     SHORT_UUID_FIELD_NUMBER: _ClassVar[int]
@@ -111,6 +111,8 @@ class UserResponse(_message.Message):
     ACTIVE_INTERNAL_SQUADS_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    TAG_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_SQUAD_UUID_FIELD_NUMBER: _ClassVar[int]
     uuid: str
     subscription_uuid: str
     short_uuid: str
@@ -140,7 +142,9 @@ class UserResponse(_message.Message):
     active_internal_squads: _containers.RepeatedCompositeFieldContainer[ActiveInternalSquad]
     created_at: _timestamp_pb2.Timestamp
     updated_at: _timestamp_pb2.Timestamp
-    def __init__(self, uuid: _Optional[str] = ..., subscription_uuid: _Optional[str] = ..., short_uuid: _Optional[str] = ..., username: _Optional[str] = ..., status: _Optional[_Union[UserStatus, str]] = ..., used_traffic_bytes: _Optional[float] = ..., lifetime_used_traffic_bytes: _Optional[float] = ..., traffic_limit_bytes: _Optional[int] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., sub_last_user_agent: _Optional[str] = ..., sub_last_opened_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., online_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., sub_revoked_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., trojan_password: _Optional[str] = ..., vless_uuid: _Optional[str] = ..., ss_password: _Optional[str] = ..., description: _Optional[str] = ..., telegram_id: _Optional[int] = ..., email: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., subscription_url: _Optional[str] = ..., first_connected: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_trigger_threshold: _Optional[int] = ..., happ: _Optional[_Union[HappCrypto, _Mapping]] = ..., active_internal_squads: _Optional[_Iterable[_Union[ActiveInternalSquad, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    tag: str
+    external_squad_uuid: str
+    def __init__(self, uuid: _Optional[str] = ..., subscription_uuid: _Optional[str] = ..., short_uuid: _Optional[str] = ..., username: _Optional[str] = ..., status: _Optional[_Union[UserStatus, str]] = ..., used_traffic_bytes: _Optional[float] = ..., lifetime_used_traffic_bytes: _Optional[float] = ..., traffic_limit_bytes: _Optional[int] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., sub_last_user_agent: _Optional[str] = ..., sub_last_opened_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., online_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., sub_revoked_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., trojan_password: _Optional[str] = ..., vless_uuid: _Optional[str] = ..., ss_password: _Optional[str] = ..., description: _Optional[str] = ..., telegram_id: _Optional[int] = ..., email: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., subscription_url: _Optional[str] = ..., first_connected: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_trigger_threshold: _Optional[int] = ..., happ: _Optional[_Union[HappCrypto, _Mapping]] = ..., active_internal_squads: _Optional[_Iterable[_Union[ActiveInternalSquad, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., tag: _Optional[str] = ..., external_squad_uuid: _Optional[str] = ...) -> None: ...
 
 class GetUserByUuidRequest(_message.Message):
     __slots__ = ("uuid",)
@@ -161,7 +165,7 @@ class GetUserByIdRequest(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class AddUserRequest(_message.Message):
-    __slots__ = ("username", "email", "telegram_id", "expire_at", "created_at", "last_traffic_reset_at", "active_internal_squads", "status", "traffic_limit_strategy", "description", "tag", "hwid_device_limit", "traffic_limit_bytes")
+    __slots__ = ("username", "email", "telegram_id", "expire_at", "created_at", "last_traffic_reset_at", "active_internal_squads", "status", "traffic_limit_strategy", "description", "tag", "hwid_device_limit", "traffic_limit_bytes", "short_uuid", "vless_uuid", "trojan_password", "ss_password", "external_squad_uuid")
     USERNAME_FIELD_NUMBER: _ClassVar[int]
     EMAIL_FIELD_NUMBER: _ClassVar[int]
     TELEGRAM_ID_FIELD_NUMBER: _ClassVar[int]
@@ -175,6 +179,11 @@ class AddUserRequest(_message.Message):
     TAG_FIELD_NUMBER: _ClassVar[int]
     HWID_DEVICE_LIMIT_FIELD_NUMBER: _ClassVar[int]
     TRAFFIC_LIMIT_BYTES_FIELD_NUMBER: _ClassVar[int]
+    SHORT_UUID_FIELD_NUMBER: _ClassVar[int]
+    VLESS_UUID_FIELD_NUMBER: _ClassVar[int]
+    TROJAN_PASSWORD_FIELD_NUMBER: _ClassVar[int]
+    SS_PASSWORD_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_SQUAD_UUID_FIELD_NUMBER: _ClassVar[int]
     username: str
     email: str
     telegram_id: int
@@ -188,10 +197,15 @@ class AddUserRequest(_message.Message):
     tag: str
     hwid_device_limit: int
     traffic_limit_bytes: int
-    def __init__(self, username: _Optional[str] = ..., email: _Optional[str] = ..., telegram_id: _Optional[int] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., active_internal_squads: _Optional[_Iterable[str]] = ..., status: _Optional[_Union[UserStatus, str]] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., description: _Optional[str] = ..., tag: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., traffic_limit_bytes: _Optional[int] = ...) -> None: ...
+    short_uuid: str
+    vless_uuid: str
+    trojan_password: str
+    ss_password: str
+    external_squad_uuid: str
+    def __init__(self, username: _Optional[str] = ..., email: _Optional[str] = ..., telegram_id: _Optional[int] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., active_internal_squads: _Optional[_Iterable[str]] = ..., status: _Optional[_Union[UserStatus, str]] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., description: _Optional[str] = ..., tag: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., traffic_limit_bytes: _Optional[int] = ..., short_uuid: _Optional[str] = ..., vless_uuid: _Optional[str] = ..., trojan_password: _Optional[str] = ..., ss_password: _Optional[str] = ..., external_squad_uuid: _Optional[str] = ...) -> None: ...
 
 class UpdateUserRequest(_message.Message):
-    __slots__ = ("uuid", "status", "traffic_limit_bytes", "traffic_limit_strategy", "expire_at", "last_traffic_reset_at", "description", "tag", "telegram_id", "email", "hwid_device_limit", "active_internal_squads")
+    __slots__ = ("uuid", "status", "traffic_limit_bytes", "traffic_limit_strategy", "expire_at", "last_traffic_reset_at", "description", "tag", "telegram_id", "email", "hwid_device_limit", "active_internal_squads", "external_squad_uuid")
     UUID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     TRAFFIC_LIMIT_BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -204,6 +218,7 @@ class UpdateUserRequest(_message.Message):
     EMAIL_FIELD_NUMBER: _ClassVar[int]
     HWID_DEVICE_LIMIT_FIELD_NUMBER: _ClassVar[int]
     ACTIVE_INTERNAL_SQUADS_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_SQUAD_UUID_FIELD_NUMBER: _ClassVar[int]
     uuid: str
     status: UserStatus
     traffic_limit_bytes: int
@@ -216,7 +231,8 @@ class UpdateUserRequest(_message.Message):
     email: str
     hwid_device_limit: int
     active_internal_squads: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, uuid: _Optional[str] = ..., status: _Optional[_Union[UserStatus, str]] = ..., traffic_limit_bytes: _Optional[int] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., description: _Optional[str] = ..., tag: _Optional[str] = ..., telegram_id: _Optional[int] = ..., email: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., active_internal_squads: _Optional[_Iterable[str]] = ...) -> None: ...
+    external_squad_uuid: str
+    def __init__(self, uuid: _Optional[str] = ..., status: _Optional[_Union[UserStatus, str]] = ..., traffic_limit_bytes: _Optional[int] = ..., traffic_limit_strategy: _Optional[_Union[TrafficLimitStrategy, str]] = ..., expire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_traffic_reset_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., description: _Optional[str] = ..., tag: _Optional[str] = ..., telegram_id: _Optional[int] = ..., email: _Optional[str] = ..., hwid_device_limit: _Optional[int] = ..., active_internal_squads: _Optional[_Iterable[str]] = ..., external_squad_uuid: _Optional[str] = ...) -> None: ...
 
 class GetAllUsersRequest(_message.Message):
     __slots__ = ("offset", "count")
@@ -233,6 +249,30 @@ class GetAllUsersReply(_message.Message):
     users: _containers.RepeatedCompositeFieldContainer[UserResponse]
     total: float
     def __init__(self, users: _Optional[_Iterable[_Union[UserResponse, _Mapping]]] = ..., total: _Optional[float] = ...) -> None: ...
+
+class StreamUsersRequest(_message.Message):
+    __slots__ = ("size", "cursor", "status", "tag", "external_squad_uuid")
+    SIZE_FIELD_NUMBER: _ClassVar[int]
+    CURSOR_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    TAG_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_SQUAD_UUID_FIELD_NUMBER: _ClassVar[int]
+    size: int
+    cursor: int
+    status: UserStatus
+    tag: str
+    external_squad_uuid: str
+    def __init__(self, size: _Optional[int] = ..., cursor: _Optional[int] = ..., status: _Optional[_Union[UserStatus, str]] = ..., tag: _Optional[str] = ..., external_squad_uuid: _Optional[str] = ...) -> None: ...
+
+class StreamUsersReply(_message.Message):
+    __slots__ = ("users", "next_cursor", "has_more")
+    USERS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
+    HAS_MORE_FIELD_NUMBER: _ClassVar[int]
+    users: _containers.RepeatedCompositeFieldContainer[UserResponse]
+    next_cursor: int
+    has_more: bool
+    def __init__(self, users: _Optional[_Iterable[_Union[UserResponse, _Mapping]]] = ..., next_cursor: _Optional[int] = ..., has_more: _Optional[bool] = ...) -> None: ...
 
 class DeleteUserRequest(_message.Message):
     __slots__ = ("uuid",)
@@ -395,6 +435,18 @@ class DeleteUserHwidDeviceResponse(_message.Message):
     total: int
     devices: _containers.RepeatedCompositeFieldContainer[HwidDevice]
     def __init__(self, total: _Optional[int] = ..., devices: _Optional[_Iterable[_Union[HwidDevice, _Mapping]]] = ...) -> None: ...
+
+class RevokeUserSubscriptionRequest(_message.Message):
+    __slots__ = ("uuid",)
+    UUID_FIELD_NUMBER: _ClassVar[int]
+    uuid: str
+    def __init__(self, uuid: _Optional[str] = ...) -> None: ...
+
+class ResetUserTrafficRequest(_message.Message):
+    __slots__ = ("uuid",)
+    UUID_FIELD_NUMBER: _ClassVar[int]
+    uuid: str
+    def __init__(self, uuid: _Optional[str] = ...) -> None: ...
 
 class GetHwidSettingsResponse(_message.Message):
     __slots__ = ("enabled", "fallback_device_limit")

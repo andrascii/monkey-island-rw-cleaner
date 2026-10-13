@@ -1,53 +1,504 @@
 # monkey-island-rw-cleaner
 
-Safe cleanup service for old expired RWMS subscriptions.
+Консервативная чистка панели Remnawave (через RWMS): **архивирует** и удаляет
+из панели подписки, которые давно истекли (режим `expired`), и неактивные
+подписки бесплатного тарифа (режим `free_inactive`).
 
-The service never deletes rows from the SQLAlchemy `users` table. It only deletes
-RWMS users after checking both RWMS and the local database.
+Главное:
 
-## Safety Model
+- удаление обратимо: перед `DeleteUser` всё, что нужно для восстановления
+  подписки **с той же ссылкой и теми же ключами**, пишется в
+  `subscription_archives` и коммитится; любой путь «подписки нет в панели —
+  создать» (оплата, бот, бонусы, админка, бесплатный тариф) восстанавливает её
+  из архива (`common/subscription_archive.py`);
+- по умолчанию — dry-run: ни одной записи в БД, ни одного изменения в панели
+  (ни удаления, ни отключения, ни обратного включения);
+- сироты (подписка в панели без строки `users`) не удаляются **никогда**;
+- **журнал упреждающей записи (write-ahead)**: до отправки `DeleteUser` /
+  `UpdateUser(DISABLED)` в файл состояния пишется (fsync) запись **pending**;
+  не записалась — запрос не уходит. Исход с неизвестным результатом не
+  считается «ошибкой, повторим потом»: запись становится **uncertain**,
+  блокировка `users` держится, пока перечитывание панели не даст ответ (до
+  `UNCERTAIN_CONFIRM_SECONDS`), иначе CRITICAL и остановка запуска (код 6).
+  Отмена задачи, Ctrl+C или убитый во время запроса процесс оставляют запись
+  uncertain/pending — следующий запуск считает её неопределённой. Пока есть
+  хоть одна такая запись, запуски с `--execute` ничего нового не отключают и
+  не удаляют — только перепроверяют её (см. «Неопределённые изменения
+  панели»);
+- режим `free_inactive` удаляет в две фазы: сначала `DISABLED`, пауза,
+  повторная проверка активности — и только потом удаление (или включение
+  обратно);
+- строки `users` и связанных таблиц сервис не удаляет и не меняет никогда;
+  БД — только на чтение, кроме вставки в `subscription_archives` (на время
+  `DeleteUser` строка `users` кандидата блокируется `SELECT ... FOR UPDATE
+  NOWAIT`, но не изменяется);
+- при любой неоднозначности (панель и БД расходятся, панель недоступна,
+  архив не совпадает с панелью) — пропуск и запись в лог, а не удаление.
 
-Deletion is allowed only when all checks pass:
+## Как работает
 
-- RWMS user has `expire_at`;
-- RWMS `expire_at` is older than `GRACE_DAYS`;
-- local `users` row exists by `username`, unless `--include-orphans` is explicitly used;
-- local `users.expire_at` exists;
-- local `users.expire_at` is in the past and older than `GRACE_DAYS`;
-- user has no recent pending YooKassa payment;
-- user has no non-expired WATA invoice without a paid transaction;
-- delete count is below `MAX_DELETIONS`;
-- the RWMS user is re-read immediately before deletion and the full eligibility
-  decision is calculated again;
-- destructive flags such as `--execute` and `--include-orphans` must be passed
-  explicitly on the command line, not only through environment variables.
+Один запуск = один проход (запускается по cron / вручную, не демон):
 
-Default mode is dry-run. `EXECUTE=true` in the environment is intentionally ignored;
-real deletion requires the explicit `--execute` flag.
+1. **Блокировка.** `pg_try_advisory_lock` на отдельном соединении на весь
+   запуск. Занято — выход с кодом 3 (второй экземпляр ничего не делает).
+   **Восстановление после упавшего запуска** (только `--execute`, в любом
+   режиме, до всего остального): эксклюзивный `flock` на файл состояния
+   (`STATE_PATH`, занят — код 3); перепроверка записей **uncertain**
+   (запоздавший `DISABLE` — обратное включение; подробно — в разделе
+   «Неопределённые изменения панели»); обратное включение всех подписок,
+   которые прошлый запуск перевёл в `DISABLED` и не довёл до конца (подробно —
+   в разделе про `free_inactive`). Осталась хоть одна запись uncertain, не
+   удалось включить хоть одну подписку или файл не читается — запуск
+   останавливается (код 6), ничего нового не отключается и не удаляется.
+   Dry-run файл только читает и пишет ERROR, если там что-то осталось (есть
+   записи uncertain — код 6, перебор и отчёт всё равно делаются).
+2. **Перебор панели** через `StreamUsers` (курсор, фильтр на стороне панели):
+   `expired` — только `status=EXPIRED`, `free_inactive` — только подписки на
+   внешнем отряде FREE (`external_squad_uuid = system_settings.free_tier_external_squad_uuid`).
+   По тегу не фильтруем и тег не пишем никогда: он принадлежит владельцу.
+   Ошибка RWMS или курсор, который не двигается, — запуск прерывается без
+   удалений (код 5). Каждый вызов с таймаутом.
+3. **Решение** по каждому пользователю (правила ниже) — кандидат или пропуск с
+   причиной. Набрав `MAX_DELETIONS` кандидатов, перебор останавливается (но не
+   раньше `RATIO_MIN_SAMPLE` просмотренных — для предохранителей; лишние
+   кандидаты помечаются `over_cap`). `--full-scan` — пройти всю выборку
+   (удобно для ревью в dry-run; удаляется всё равно не больше `MAX_DELETIONS`).
+4. **Предохранители** по итогам перебора (код 4, ничего не удаляется):
+   - доля пользователей панели без строки `users` (сирот) > `MAX_ORPHAN_RATIO`
+     — признак, что панель и БД не от одной системы (проверяется при выборке
+     ≥ `RATIO_MIN_SAMPLE`);
+   - доля кандидатов > `MAX_CANDIDATE_RATIO` (режим `expired`) или
+     > `MAX_FREE_CANDIDATE_RATIO` (режим `free_inactive`, по умолчанию 0.9 —
+     неактивными могут быть почти все бесплатные подписки, поэтому порог
+     свой) при выборке ≥ `RATIO_MIN_SAMPLE` — признак ошибки в данных или
+     правилах. В логе AUTO-STOP указываются режим, фактическая доля и
+     сработавший порог.
+5. **Исполнение** (только с `--execute`), по одному кандидату, с паузой
+   `DELETE_PAUSE_SECONDS` между ними (режим `free_inactive` — в две фазы,
+   см. ниже; шаги 1–7 — это его фаза 2):
+   1. строгое перечитывание из панели по username
+      (`get_user_by_username_strict`): недоступность — ошибка, «нет в панели»
+      — пропуск (делать нечего), другой uuid — ошибка;
+   2. полное повторное решение по свежим данным панели и **свежей** БД
+      (успел оплатить, заблокировали, создал счёт — пропуск);
+   3. архив: если открытый архив username уже есть (прошлый запуск упал между
+      архивом и удалением) — он используется повторно, **только если** его
+      ссылка/ключи и `user_id` совпадают с панелью, иначе CRITICAL и пропуск
+      (`skipped:open_archive_mismatch`, счётчик `archive_mismatch`, нужен
+      ручной разбор); если нет — `build_archive` + COMMIT;
+   4. **блокировка строки `users`**: новая транзакция,
+      `SELECT ... FROM users WHERE id = :user_id FOR UPDATE NOWAIT`. Строку
+      прямо сейчас держит другая транзакция (платёж, продление) — пропуск
+      `user_row_locked`, ждать не будем;
+   5. под блокировкой — ещё одно строгое перечитывание панели (пропала —
+      пропуск, другой uuid — ошибка, ссылка/ключи разошлись с архивом —
+      `open_archive_mismatch`) и **повторная загрузка всех фактов БД**
+      (`expire_at`, платёжные попытки, сохранённая карта, бесплатный тариф,
+      запрос на удаление аккаунта, блокировка, win-back, временный бан,
+      grace) с тем же решением; не кандидат — пропуск
+      `no_longer_eligible_locked:<причина>`;
+   6. `DeleteUser`, **не отпуская блокировку**, затем COMMIT (он только
+      снимает блокировку — транзакция ничего не пишет). Любая ошибка на шагах
+      4–6 до `DeleteUser` — ROLLBACK и без удаления (`locked_recheck_failed`).
+      **Перед `DeleteUser`** в файл состояния пишется (fsync) упреждающая
+      запись `state=pending` (`op=delete`, uuid, username, `user_id`,
+      `archive_id`, время запроса); не записалась — `DeleteUser` не
+      вызывается, `failed:state_write_failed`, архив этого запуска
+      закрывается, запуск останавливается (`stop_reason=state_write_failed`,
+      код 1). `is_deleted=true` — запись убирается.
+      **Неизвестный исход `DeleteUser`** (таймаут, `UNAVAILABLE`, любая ошибка
+      RPC — клиент вернул `None`, `is_deleted=false`, исключение): запись
+      **сразу** становится uncertain — процесс убьют во время ожидания, запись
+      останется; блокировка `users` **не снимается**, панель
+      строго перечитывается каждые 2 с, всего не дольше
+      `UNCERTAIN_CONFIRM_SECONDS` (по умолчанию 180 с, но никогда не меньше
+      2 × `RWMS_TIMEOUT_SECONDS`; каждое перечитывание со своим таймаутом
+      ≤ `RWMS_TIMEOUT_SECONDS`). Подписки с этим uuid больше нет — удаление
+      состоялось (`deleted ... confirmed_by=reread`), запись uncertain
+      убирается. Всё ещё есть (или панель так и не ответила) — CRITICAL
+      `DELETE UNCERTAIN`, итог `failed:delete_uncertain`, счётчик
+      `delete_uncertain`, **весь запуск останавливается**
+      (`stop_reason=delete_uncertain`, код 6, остальные кандидаты —
+      `not_run:delete_uncertain`), архив остаётся открытым, запись uncertain
+      остаётся — дальше см. «Неопределённые изменения панели». Зачем
+      блокировка на время ожидания: если отпустить её сразу, платёж продлил
+      бы ещё живую подписку, а запоздавший `DELETE`, уже принятый панелью,
+      удалил бы её — человек заплатил, а доступа нет.
+   7. **Закрытие архива прерванного удаления.** Если удаление прервано на
+      шагах 4–5 **до** `DeleteUser` (`user_row_locked`,
+      `no_longer_eligible_locked:*`, `open_archive_mismatch`,
+      `panel_uuid_changed`, `panel_reread_failed`, `user_row_changed`,
+      `user_mapping_changed`, `locked_recheck_failed`) и архив создан **этим**
+      запуском, он закрывается отдельной транзакцией: `restored_at=now`,
+      `restored_by="rw-cleaner:aborted"` (лог `aborted deletion: archive
+      closed`, счётчик `archive_closed_aborted`). Так рядом с живой подпиской
+      не остаётся открытого архива (иначе будущий путь «нет в панели —
+      создать» мог бы вернуть устаревшие ключи, а следующий запуск упирался
+      бы в `open_archive_mismatch`). **Не закрываются:** переиспользованный
+      архив прошлого запуска; архив при `gone_from_panel` под блокировкой
+      (подписки нет — архив единственный способ вернуть ту же ссылку); архив
+      после вызова `DeleteUser`, в том числе с неизвестным исходом
+      (`delete_rpc_failed`, `delete_returned_false`); архив, уже закрытый
+      кем-то другим или чужого пользователя. Сбой закрытия — ERROR в лог,
+      счётчик `archive_close_failed`, архив остаётся открытым (как раньше),
+      итог кандидата не меняется.
+   После `MAX_CONSECUTIVE_FAILURES` ошибок подряд запуск останавливается
+   (код 4). Пропуски (в том числе `open_archive_mismatch` и
+   `user_row_locked`) в серию ошибок не входят — один застарелый архив не
+   останавливает каждый запуск.
 
-## Downstream effects on other services
+   Зачем блокировка: без неё продление, закоммитившее `users.expire_at` между
+   решением и `DeleteUser`, получило бы удалённую подписку. Теперь продление,
+   закоммиченное до блокировки, видно под ней и отменяет удаление; продление,
+   начавшееся после, ждёт COMMIT очистителя на своём `UPDATE users`, после
+   чего уже видит в панели NOT_FOUND и восстанавливает подписку из архива.
+   Сироты (нет строки `users`) не удаляются никогда — блокировать нечего.
+   Dry-run блокировок не берёт. Каждый вызов RWMS под блокировкой
+   (перечитывание, `UpdateUser`, `DeleteUser`, подтверждение) — с таймаутом.
+6. **Отчёт** CSV по всем просмотренным пользователям и итоговая строка в лог.
 
-After a subscription is deleted from Remnawave, the local `users` row still exists,
-so the user can appear in services without a matching RWMS subscription. This was
-reviewed across the project:
+### Сбой посреди запуска
 
-- **Payment** (`rwms_tasks_processor.py`) and both referral bonus paths
-  (`payment_handlers.py`, user-notify `user_traffic_progress_watcher.py`) detect a
-  missing RWMS user and recreate it via `AddUser`. A new payment or referral bonus
-  fully restores the subscription. No money or bonus is lost.
-- **User-notify** drives expiration/expired notifications from the local
-  `users.expire_at`, so a missing RWMS subscription does not break notifications.
-- **Telegram bot** "Install VPN" and "My Profile" handlers detect the missing RWMS
-  subscription and offer renewal (tariffs keyboard) instead of a generic error.
-- **Website cabinet** shows a "contact support" message for the subscription URL
-  until the user pays, which recreates the subscription.
+| Состояние после сбоя | Следующий запуск |
+|---|---|
+| архив закоммичен, подписка ещё в панели | подписка снова кандидат → архив переиспользуется → удаление |
+| архив закоммичен, подписки в панели нет (удаление прошло, ответ потерялся) | в выборке её нет — делать нечего; архив ждёт восстановления |
+| архив не закоммичен | ничего не изменилось — обычная обработка |
+| архив закоммичен этим запуском, под блокировкой выяснилось, что подписка больше не кандидат (оплатил, бан, grace…) или строка занята | архив закрыт тем же запуском (`restored_by="rw-cleaner:aborted"`); если подписка снова станет кандидатом — будет создан новый архив |
+| то же, но процесс упал до закрытия архива / закрытие не удалось | архив открыт и совпадает с живой подпиской; следующий запуск переиспользует его, если подписка снова кандидат (переиспользованный архив при прерывании не закрывается) |
+| `DeleteUser` с неизвестным исходом, подтвердить не удалось (`delete_uncertain`, код 6) | запись uncertain: запуски с `--execute` только перепроверяют её (код 6) до конца карантина или `--clear-uncertain`; потом — если подписка есть и снова кандидат, архив переиспользуется |
+| `UpdateUser(DISABLED)` с неизвестным исходом (`disable_uncertain`, код 6) | запись uncertain: каждый запуск перепроверяет; панель показывает `DISABLED` — включает обратно; до конца карантина ничего нового не делается |
+| процесс убит во время ожидания подтверждения `DeleteUser`/`UpdateUser` | запись uncertain уже в файле (пишется до перечитываний) — как две строки выше |
+| отмена задачи (`asyncio.CancelledError`), `KeyboardInterrupt`/`SystemExit` **во время** `DeleteUser`/`UpdateUser(DISABLED)` или ожидания подтверждения | запись помечается uncertain (`failed:delete_interrupted` / `failed:disable_interrupted`, `stop_reason=interrupted`), исключение пробрасывается дальше; `finally` включает обратно только подписки с **подтверждённым** `DISABLE` — как две строки выше |
+| процесс убит жёстко (`SIGKILL`, OOM, падение машины) **во время** `DeleteUser`/`UpdateUser(DISABLED)` | в файле осталась упреждающая запись `pending` (CRITICAL `write-ahead record left PENDING by an interrupted run`) — следующий запуск разбирает её ровно как uncertain: ничего нового, перепроверка, запоздавший `DISABLE` включается обратно, код 6, карантин |
+| упреждающую запись не удалось записать | запрос не отправлен; `failed:state_write_failed`, запуск остановлен (код 1), ничего не изменилось |
+| `DISABLE`/`DELETE` подтверждён, но переход записи не записался в файл | `DISABLE`: подписка сразу включается обратно; запись `pending` остаётся и в памяти, и в файле — дальше в этом запуске ничего не меняется (`stop_reason=state_write_failed`, код 6), следующий запуск разбирает её как uncertain |
+| `free_inactive`: подписка отключена фазой 1 (`DISABLE` подтверждён), процесс убит до фазы 2 / до обратного включения | запись об отключении в файле состояния; следующий запуск с `--execute` первым делом включает её обратно (если она всё ещё `DISABLED`, та же и без `user_blocks`) |
+| процесс убит во время обратного включения (`UpdateUser(ACTIVE)`) | запись об отключении ещё в файле (она убирается только после определённого итога) — следующий запуск повторяет обратное включение; запоздавший `ACTIVE` ничего не отключает и не удаляет |
 
-Because only subscriptions expired longer than `GRACE_DAYS` (>= 30 days) are deleted,
-affected users cannot use the VPN anyway until they renew.
+### Неопределённые изменения панели (uncertain)
 
-## Environment
+У Remnawave нет отмены уже принятого запроса и нет условного удаления: если
+`DeleteUser` или `UpdateUser(DISABLED)` вернул неизвестный исход (таймаут,
+`UNAVAILABLE`, `None`, `is_deleted=false`, неожиданный ответ, исключение) и
+перечитывания панели под блокировкой `users` за `UNCERTAIN_CONFIRM_SECONDS`
+ничего не прояснили, запрос мог застрять в панели и выполниться **позже** —
+когда блокировка уже снята и пользователь, возможно, успел заплатить.
+Текущее `ACTIVE`/«подписка на месте» этого не опровергает. Поэтому:
 
-Required:
+1. **Упреждающая запись (write-ahead) — до запроса.** **Перед** каждым
+   `DeleteUser` и `UpdateUser(DISABLED)` в файл состояния (`STATE_PATH`,
+   раздел `uncertain`) атомарно (временный файл + fsync + `os.replace` +
+   fsync каталога) пишется запись `state=pending`: `op` (`delete`|`disable`),
+   uuid подписки, username, `user_id`, `archive_id` (для `delete`),
+   `started_at` (время запроса), `last_checked_at`, `last_observed`. Не
+   записалась — запрос **не отправляется** (`failed:state_write_failed`,
+   `stop_reason=state_write_failed`, код 1). Переходы записи:
+
+   | Исход | Запись |
+   |---|---|
+   | `DELETE` подтверждён (`is_deleted=true` или перечитывание: подписки с этим uuid нет) | убирается |
+   | `DISABLE` подтверждён (ответ или перечитывание: тот же uuid, `DISABLED`) | **одной атомарной записью** превращается в обычную запись об отключении (раздел `entries`), её ведёт фаза 2 |
+   | `DISABLE`, перечитывание: подписки с этим uuid нет | убирается (`skipped:gone_after_disable`) |
+   | исход неизвестен (таймаут, `None`, `is_deleted=false`, неожиданный ответ, исключение) | **сразу**, до перечитываний — `state=uncertain`; перечитывания прояснили — как выше; нет — CRITICAL `DELETE UNCERTAIN` / `DISABLE UNCERTAIN`, `failed:delete_uncertain` / `failed:disable_uncertain`, весь запуск останавливается, код 6 |
+   | отмена задачи / `KeyboardInterrupt` / `SystemExit` во время запроса или ожидания | `state=uncertain`, CRITICAL `INTERRUPTED during a panel mutation`, исключение пробрасывается (`stop_reason=interrupted`) |
+   | процесс убит жёстко | остаётся `pending` — следующий запуск = uncertain |
+   | «не применено» | **не бывает**: доказать, что панель запрос не выполнит, нельзя — только uncertain и карантин |
+
+   Не удалось пометить запись uncertain — ничего страшного: в файле остаётся
+   `pending`, которую следующий запуск разбирает точно так же. Подтверждённый
+   исход, но переход не записался — запись остаётся (и в памяти: дальше в
+   этом запуске ничего не отключается и не удаляется, код 6), подтверждённый
+   `DISABLE` сразу включается обратно.
+   Запись об отключении (`entries`) появляется **только после
+   подтверждённого** `DISABLE`. Поэтому обычное восстановление, увидев
+   `ACTIVE`, вправе её убрать (включил кто-то другой), а неподтверждённый
+   `DISABLE` ведёт только запись uncertain/pending — её не снимает ни
+   восстановление, ни `finally`, только правила карантина ниже.
+2. **Пока есть хоть одна запись uncertain или pending** (pending к старту
+   запуска — след прерванного запуска, CRITICAL `write-ahead record left
+   PENDING by an interrupted run`, при перепроверке она становится
+   uncertain), запуск с `--execute` (любой
+   режим) ничего нового не отключает и не удаляет: перепроверяет записи,
+   включает обратно то, что осталось `DISABLED` после упавших запусков, и
+   выходит с кодом 6 (`stop_reason=uncertain_pending`, перебор панели не
+   делается). Dry-run записи только показывает (ERROR в лог, код 6).
+   Перепроверка (строгое перечитывание панели):
+   - `disable`, панель показывает `DISABLED` — запоздавший `DISABLE` дошёл:
+     под блокировкой `users` подписка включается обратно (`ACTIVE`, только
+     статус, с таймаутом), если это та же подписка и у пользователя нет
+     `user_blocks` (иначе остаётся `DISABLED` — статусом владеет админская
+     блокировка). Новых удалений в таком запуске нет, так что подписка точно
+     не из «вот-вот удаляемых». Не удалось включить — CRITICAL `RE-ENABLE
+     FAILED`, запись не снимается даже после карантина;
+   - `disable`, любой другой статус (`ACTIVE` и т. п.) — запись **остаётся**
+     до конца карантина;
+   - `delete`, подписки нет — запоздавший `DELETE` дошёл (или её удалил
+     кто-то ещё). Пользователь в БД не активен — WARNING, удаление и было
+     целью; активен и есть открытый архив — ERROR: её вернёт сверка
+     user-notify (heal «в БД активна, в панели нет» из архива с той же
+     ссылкой и ключами) — проверить; активен, а открытого архива нет —
+     CRITICAL, нужно восстановить вручную;
+   - `delete`, подписка на месте — запись остаётся до конца карантина;
+   - панель не ответила — запись остаётся (и после карантина тоже).
+   Запись снимается (INFO `uncertain record dropped after quarantine`), когда
+   с `started_at` прошло `UNCERTAIN_QUARANTINE_HOURS` (по умолчанию 24 ч, не
+   меньше 1 ч) **и** перечитывание в этом же запуске прошло успешно и не
+   показало `DISABLED` без `user_blocks` (для `disable`). Битое `started_at` —
+   запись автоматически не снимается никогда. Сняты все — запуск работает
+   дальше как обычно.
+3. **Ручное снятие** после разбора: `python main.py --execute
+   --clear-uncertain <panel_uuid>` (можно несколько раз) — убирает записи и
+   выходит, ничего больше не делая; в лог (WARNING `uncertain record cleared
+   by operator`) пишется запись целиком, `cleared_by` (пользователь ОС, при
+   `sudo` — и `SUDO_USER`) и `cleared_at`. Нет такой записи — ERROR, код 2.
+   Без `--execute` — ошибка настроек.
+
+**Остаточный риск (честно).** Запрос, который панель приняла, но выполнила
+после окна подтверждения, отменить нельзя. Если в этот промежуток
+пользователь заплатил: запоздавший `DELETE` удалит уже продлённую подписку,
+запоздавший `DISABLE` — отключит её. Ущерб ограничен: запуски с
+`--execute` отказываются от новых изменений, пока неопределённость не снята;
+каждый следующий запуск перепроверяет запись и сам включает обратно
+запоздавший `DISABLE`; удалённую подписку активного пользователя с открытым
+архивом восстанавливает сверка user-notify с той же ссылкой и ключами (без
+архива — CRITICAL в логе, вручную). Окно, в течение которого пользователь
+может остаться без доступа, — до следующего запуска (запоздавший `DISABLE`)
+или до цикла user-notify (запоздавший `DELETE`); код 6 означает, что нужен
+человек. Файл состояния (`STATE_PATH`) **обязан** лежать на постоянном томе:
+потеря файла = потеря записей uncertain (и записей об отключении).
+
+### Режим `expired` (по умолчанию)
+
+Кандидат, только если выполнены **все** условия:
+
+| Условие | Причина пропуска |
+|---|---|
+| username в `USERNAME_ALLOWLIST` (если задан) | `not_in_allowlist` |
+| у пользователя панели есть uuid и username | `missing_rwms_identity` |
+| **у подписки нет тега** (`tag` пуст) — тег = ручная пометка владельца («вечная ссылка», «знакомый»); любая помеченная подписка не архивируется и не удаляется никогда | `owner_tagged` |
+| статус в панели `EXPIRED` (`DISABLED` = блокировка, `LIMITED` = лимит трафика, `ACTIVE` — не трогаем) | `panel_status_*` |
+| подписка не на внешнем отряде FREE (`free_tier_external_squad_uuid`, без учёта регистра; не настроен — проверка не срабатывает) | `panel_free_squad` |
+| срок в панели есть и старше `GRACE_DAYS` | `panel_expire_at_missing`, `panel_not_old_enough` |
+| есть строка `users` с тем же username (сироты не удаляются никогда) | `local_user_not_found`, `orphan_identity_match` |
+| `users.expire_at` есть, в прошлом и старше `GRACE_DAYS` | `db_expire_at_missing`, `db_user_active`, `db_not_old_enough` |
+| срок в панели и в БД расходятся не больше `EXPIRE_TOLERANCE_HOURS` | `expire_mismatch` |
+| нет записи в `user_blocks` | `user_blocked` |
+| нет запроса на удаление аккаунта в статусе `pending` или `completed` | `account_deletion_*` |
+| нет действующего оффера win-back (`winback_offers.valid_until` в будущем) | `winback_offer_active` |
+| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts` | `recent_yk_payment`, `recent_wata_invoice`, `recent_website_payment_attempt` |
+| нет строки `yk_recurrent_payments` (сохранённая карта) | `recurrent_payment_saved` |
+| нет активного временного бана (`temporary_squad_bans.restored_at IS NULL`) | `temporary_squad_ban_active` |
+| нет активного grace-доступа (`grace_access_grants.restored_at IS NULL`) | `grace_access_active` |
+| нет `free_tier_access.on_free = true` | `free_tier_on_free` |
+| ступень (`--tier`) — см. ниже | `tier_paid`, `tier_connected` |
+| ссылку и ключи панель примет обратно в `AddUser` (`panel_user_restorable`) | `not_restorable` |
+
+`GRACE_DAYS` по умолчанию 90 и не может быть меньше 45: срок хранения всегда
+больше последнего шага win-back (день 30 + оффер 48 ч), чтобы не удалить
+подписку у человека, которому только что предложили скидку.
+
+Нестандартные параметры подписки (лимит трафика, лимит устройств, отряды не
+как в `internal_squads_uuids`, внешний отряд) на решение не влияют —
+архив их хранит, — но пишутся в колонку `notes`. Исключение — **тег**: подписка
+с любым непустым тегом (даже из пробелов) пропускается с причиной
+`owner_tagged` в обоих режимах — при отборе, при перечитывании перед архивом
+(`no_longer_eligible:owner_tagged`) и под блокировкой строки `users` перед
+`DeleteUser` (`no_longer_eligible_locked:owner_tagged`; архив, созданный этим
+запуском, закрывается как прерванный). Тег, если он появился уже после архива,
+архив хранит (`build_archive` пишет `tag`, `apply_archive` возвращает его при
+восстановлении).
+
+**Ступени (`--tier`, `CLEANER_TIER`)** — каждая следующая шире:
+
+- `never_connected` (по умолчанию, первая ступень выкатки): в панели нет
+  `first_connected` и `online_at`, трафик за всё время 0, и ни одного
+  успешного платежа;
+- `never_paid`: подключался, но ни одного успешного платежа
+  (`yk_payments` succeeded/refunded или оплаченная транзакция WATA);
+- `all`: все, кто прошёл правила выше (в том числе когда-то платившие).
+
+**Сироты** (подписка в панели без строки `users`) **не удаляются никогда**:
+без `user_id` их нельзя заархивировать (удаление было бы необратимым), а
+подписка в панели без пользователя в БД — расхождение, при котором правила RW
+Cleaner требуют пропуска. Они всегда есть в отчёте с причиной
+`local_user_not_found` (или `orphan_identity_match`, если e-mail/telegram_id
+из панели совпал с другим `users`) и учитываются предохранителем
+`MAX_ORPHAN_RATIO`. Флаг `--include-orphans` удалён: передать его — ошибка
+настроек (код 2) с объяснением.
+
+### Режим `free_inactive`
+
+Признак бесплатного тарифа — **внешний отряд FREE**
+(`system_settings.free_tier_external_squad_uuid`). Не настроен — режим
+**отказывается работать**: ERROR в лог (`free_inactive mode refused`),
+`stop_reason=free_squad_not_configured`, код выхода 2, панель не читается.
+Отряд задан, но бесплатный тариф выключен или настроен не полностью
+(`common.free_tier.free_tier_settings_from(system_settings).ready`) — запуск
+ничего не делает (код 0, как раньше). Перебор — `StreamUsers` с фильтром
+`external_squad_uuid = <отряд FREE>` (строчными, как его отдаёт панель).
+Кандидат, если:
+
+- у подписки нет тега владельца (`owner_tagged`);
+- внешний отряд — FREE (повторная проверка на стороне cleaner,
+  `panel_not_free`), статус `ACTIVE`. `LIMITED` **не трогаем**
+  (`panel_status_limited`): такого пользователя ограничили нашим же лимитом
+  трафика бесплатного тарифа, подключиться он не может, и «нет подключений
+  N дней» вызвано нами, а не его неактивностью;
+- есть строка `users` и `free_tier_access.on_free = true`;
+- в `users.expire_at` нет действующего оплаченного/пробного времени;
+- те же проверки, что в `expired`: блокировка, запрос на удаление аккаунта,
+  оффер win-back, недавние платёжные попытки, сохранённая карта, активный
+  временный бан, активный grace-доступ;
+- последняя активность — самое позднее из `online_at`, `first_connected` в
+  панели и `free_tier_access.switched_at` — старше `free_tier_inactive_days`
+  (переведённый на бесплатный тариф всегда получает полный срок). **Жёсткий
+  нижний предел — 30 дней** (`MIN_FREE_INACTIVE_DAYS`): значение
+  `system_settings.free_tier_inactive_days` меньше 30 (например, опечатка `1`)
+  поднимается до 30 с WARNING `free_tier_inactive_days is below the hard floor,
+  clamped configured=... effective=30`; предел применяется и в самом правиле
+  (`effective_free_inactive_days`), а не только при чтении настройки;
+- если панель сбросила трафик (`last_traffic_reset_at`) позже последней
+  активности и меньше 7 дней назад (`FREE_RESET_GRACE_DAYS`) — пропуск
+  `free_traffic_reset_recently`: до сброса пользователь мог быть `LIMITED`, ему
+  даётся неделя, чтобы снова подключиться. Полный `free_tier_inactive_days`
+  здесь не берётся: помесячный сброс у всех FREE иначе сделал бы режим
+  неработающим. Поэтому `free_tier_inactive_days` стоит держать не меньше
+  периода сброса трафика (30 дней при `month_rolling`);
+- ссылка и ключи восстановимы.
+
+Архив пишется с `reason = free_inactive` (и `panel_status = ACTIVE` — статус
+до нашего `DISABLED`).
+
+#### Двухфазное удаление (`free_inactive`)
+
+У Remnawave нет условного удаления («удалить, только если не подключался»), а
+`online_at` и трафик панель обновляет с задержкой: человек, подключившийся
+за минуту до `DeleteUser`, по данным панели ещё «неактивен». Поэтому:
+
+1. **Фаза 1 — отключение** (для всей партии, по одному, с
+   `DELETE_PAUSE_SECONDS`): строгое перечитывание и решение; под блокировкой
+   `users` (`FOR UPDATE NOWAIT`) — ещё раз перечитывание панели и все факты
+   БД; затем **сначала** упреждающая запись `pending` в файл состояния
+   (`STATE_PATH`, атомарно: временный файл + fsync + `os.replace`; не
+   записалось — `failed:state_write_failed`, подписка не трогается, запуск
+   останавливается), **потом** `UpdateUser(uuid, status=DISABLED)` — только
+   статус (тег, отряды, срок, лимиты не передаются), ответ проверяется (тот
+   же uuid, `DISABLED`); подтверждён — запись `pending` атомарно становится
+   записью об отключении; COMMIT снимает блокировку. Снимок активности (`online_at`, `first_connected`,
+   трафик за период и за всё время, `sub_last_opened_at`,
+   `last_traffic_reset_at`) запоминается из перечитывания под блокировкой.
+   `UpdateUser` без ответа/с неожиданным ответом — неопределённый исход:
+   запись uncertain, перечитывания под блокировкой до
+   `UNCERTAIN_CONFIRM_SECONDS`; `DISABLED` — продолжаем как обычно; так и не
+   выяснилось — `failed:disable_uncertain`, остановка, код 6 (см.
+   «Неопределённые изменения панели»).
+2. **Пауза `FREE_SETTLE_SECONDS`** (по умолчанию 180 с, минимум 120 с; не
+   меньше интервала, с которым панель обновляет онлайн/трафик) — **один раз
+   на партию**, а не на каждого.
+3. **Фаза 2 — удаление или обратное включение** (шаги 1–7 выше): дважды
+   (без блокировки и под ней) строгое перечитывание панели и фактов БД.
+   Удаляется, только если подписка всё ещё `DISABLED`, снимок активности не
+   изменился и все правила выполняются (решение — по снимку со статусом
+   `ACTIVE`, каким он был до нас). Иначе — пропуск
+   (`status_changed_since_disable[_locked]`,
+   `activity_since_disable[_locked]`, `no_longer_eligible[_locked]:*`, любой
+   сбой) и **обратное включение**: под блокировкой `users` строгое
+   перечитывание, `UpdateUser(uuid, status=ACTIVE)` — только если это та же
+   подписка, она всё ещё `DISABLED` и у пользователя **нет** строки
+   `user_blocks` (админская блокировка — тогда статусом владеет она, остаётся
+   `DISABLED`: `kept_disabled_blocked`). Статус уже не `DISABLED` (платёж или
+   админ включили сами) — не трогаем (`not_disabled`). `DeleteUser` с
+   неизвестным исходом — как выше (`delete_uncertain`, запись uncertain,
+   остановка); подписка, если она ещё на месте, включается обратно, дальше её
+   ведёт запись uncertain.
+4. **Что бы ни случилось** (серия ошибок, `delete_uncertain`, исключение,
+   отмена) — в `finally` включается обратно всё, что этот запуск отключил
+   (с подтверждённым `DISABLE`) и не удалил (`not_run:<причина>` в отчёте);
+   прерванный посреди запроса `DISABLE` ведёт его запись uncertain/pending.
+   Если процесс убит жёстко
+   (`SIGKILL`, `docker stop` без graceful-периода, падение машины) — запись
+   остаётся в файле состояния, и **следующий запуск с `--execute`** (любой
+   режим) первым делом включает такие подписки обратно (те же условия), а
+   записи об удалённых/уже включённых убирает. Не удалось включить —
+   CRITICAL `RE-ENABLE FAILED`, код 6, запуск ничего больше не делает.
+
+Файл состояния (`STATE_PATH`, по умолчанию
+`report/rw-cleaner-free-disabled.json`, рядом — `.lock` для `flock`) —
+единственный механизм восстановления без изменения схемы БД; **он должен
+лежать на постоянном томе** (в Docker — volume), иначе после пересоздания
+контейнера отключённые подписки сами не включатся. В файле только uuid
+подписки, username, `user_id` и время отключения — без ссылки и ключей.
+Dry-run подписки не отключает и не включает.
+
+Остаточные риски: попытка подключения **во время** паузы отклоняется
+(подписка `DISABLED`) и в статистике не видна — человек, не заходивший 30+
+дней, попавший ровно в эти 2–3 минуты, будет удалён (подписка вернётся из
+архива с той же ссылкой при любом продлении / переходе на бесплатный тариф;
+открытие ссылки подписки клиентом при этом видно через `sub_last_opened_at`).
+Ручное «мягкое» отключение админом (`DISABLED` без `user_blocks`) за время
+паузы неотличимо от нашего и будет снято при обратном включении — на практике
+его запускает алерт по трафику, то есть активность, которая и так отменит
+удаление.
+
+## Отчёт и логи
+
+CSV-отчёт на каждый запуск (`REPORT_PATH` / `--report-path`; по умолчанию
+`report/rw-cleaner-<mode>-<UTC-время>.csv` относительно рабочего каталога): по
+строке на каждого просмотренного пользователя (кроме отфильтрованных
+allowlist): `username, panel_uuid, user_id, mode, tier, decision, reason,
+action, archive_id, panel_status, panel_expire_at, db_expire_at,
+expire_diff_hours, first_connected_at, online_at, lifetime_traffic_bytes,
+ever_paid, last_payment_at, free_switched_at, notes, reenable`.
+
+`action`: `dry_run`, `deleted`, `over_cap`, `skipped:<причина>` (передумали при
+перепроверке, в том числе `skipped:no_longer_eligible_locked:<причина>` — под
+блокировкой строки `users`, `skipped:user_row_locked`,
+`skipped:open_archive_mismatch`, `skipped:activity_since_disable[_locked]`,
+`skipped:status_changed_since_disable[_locked]`), `failed:<причина>` (в том
+числе `failed:delete_uncertain`, `failed:disable_uncertain`,
+`failed:state_write_failed`, `failed:delete_interrupted`,
+`failed:disable_interrupted`), `skipped:gone_after_disable`, `not_run:<причина
+остановки>` (в том числе `not_run:uncertain_pending`, `not_run:interrupted`,
+`not_run:state_write_failed`).
+
+`reenable` (только `free_inactive`): итог обратного включения подписки,
+отключённой фазой 1 — `reenabled`, `not_disabled`, `gone`,
+`panel_uuid_changed`, `kept_disabled_blocked` или причина неудачи
+(`reenable_rpc_failed`, `panel_reread_failed`, `user_row_locked`, …); пусто —
+не отключалась или удалена.
+
+Логи (`log/rw-cleaner.log` + stdout) — `key=value`: каждый кандидат
+(`candidate ...`), каждый архив (`archived ...`), каждое отключение
+(`disabled (phase 1) ...`), каждое обратное включение (`re-enabled ...`,
+`left DISABLED ...`, `RE-ENABLE FAILED ...`), каждое удаление
+(`deleted ... confirmed_by=rpc|reread`, `DELETE UNCERTAIN ...`), каждая
+упреждающая запись (`write-ahead record persisted ...`, `write-ahead record
+NOT persisted, request not sent ...`, `write-ahead record left PENDING by an
+interrupted run ...`, `INTERRUPTED during a panel mutation ...`), каждая
+запись uncertain (`DISABLE UNCERTAIN ...`, `uncertain record kept ...`,
+`uncertain DISABLE landed late ...`, `uncertain DELETE landed ...`,
+`uncertain record dropped after quarantine ...`, `uncertain record cleared by
+operator ...`) со статусом, сроками с обеих сторон, first_connected/online_at,
+трафиком, датой последнего платежа, ступенью и причиной; итог запуска и
+причины пропусков. Ссылка подписки (short_uuid), ключи, subscription_url и
+токены не пишутся ни в лог, ни в отчёт.
+
+## Коды выхода
+
+| Код | Значение |
+|---|---|
+| 0 | успешно (в том числе «нечего делать» и dry-run) |
+| 1 | часть кандидатов не обработана (архив остался открытым — повтор в следующий запуск), есть `open_archive_mismatch` (нужен ручной разбор), не записан отчёт или не записалась упреждающая запись (`state_write_failed`: запрос не отправлен, запуск остановлен) |
+| 2 | ошибка настроек (аргументы; `free_inactive` без внешнего отряда FREE в `system_settings`) |
+| 3 | уже идёт другой запуск (advisory lock или `flock` файла состояния занят) |
+| 4 | автоостановка: доля сирот / доля кандидатов / серия ошибок |
+| 5 | перебор панели не завершён — ничего не удалялось |
+| 6 | нужен человек: `delete_uncertain` / `disable_uncertain` (исход `DeleteUser` / `UpdateUser(DISABLED)` не подтвердился или запрос прерван — `interrupted`), подтверждённый исход не удалось записать в файл, в файле состояния есть записи uncertain/pending (запуск ничего нового не делал; в dry-run — тоже 6), подписку, отключённую этим инструментом, не удалось включить обратно, или файл состояния не читается |
+
+## Настройки
+
+Обязательные:
 
 ```bash
 DATABASE_URL=postgresql+psycopg2://user:password@host:5432/db
@@ -55,51 +506,212 @@ RWMS_HOST=127.0.0.1
 RWMS_PORT=50052
 ```
 
-Optional:
+Необязательные (env / флаг):
+
+| Env | Флаг | По умолчанию | Смысл |
+|---|---|---|---|
+| `CLEANER_MODE` | `--mode` | `expired` | `expired` или `free_inactive` |
+| `CLEANER_TIER` | `--tier` | `never_connected` | ступень режима `expired`: `never_connected`, `never_paid`, `all` |
+| `GRACE_DAYS` | `--grace-days` | 90 (мин. 45) | срок хранения после истечения (панель и БД) |
+| `EXPIRE_TOLERANCE_HOURS` | `--expire-tolerance-hours` | 24 | допустимое расхождение сроков панели и БД |
+| `RECENT_PAYMENT_DAYS` | `--recent-payment-days` | 14 | окно «недавних» платёжных попыток |
+| `MAX_DELETIONS` | `--max-deletions` | 25 (1..1000) | максимум удалений за запуск |
+| `DELETE_PAUSE_SECONDS` | `--delete-pause-seconds` | 1.0 | пауза между удалениями |
+| `MAX_CONSECUTIVE_FAILURES` | `--max-consecutive-failures` | 3 | автоостановка после N ошибок подряд |
+| `MAX_CANDIDATE_RATIO` | `--max-candidate-ratio` | 0.6 | режим `expired`: автоостановка, если кандидатов больше этой доли просмотренных |
+| `MAX_FREE_CANDIDATE_RATIO` | `--max-free-candidate-ratio` | 0.9 (0..1] | режим `free_inactive`: то же для неактивных бесплатных (их доля в норме высокая); `MAX_CANDIDATE_RATIO` в этом режиме не применяется |
+| `MAX_ORPHAN_RATIO` | `--max-orphan-ratio` | 0.05 | автоостановка, если сирот больше этой доли |
+| `RATIO_MIN_SAMPLE` | `--ratio-min-sample` | 200 | минимальная выборка для долевых предохранителей |
+| `PAGE_SIZE` | `--page-size` | 500 (1..1000) | размер страницы StreamUsers |
+| `RWMS_TIMEOUT_SECONDS` | `--rwms-timeout-seconds` | 30 | таймаут перечитывания, UpdateUser и DeleteUser |
+| `UNCERTAIN_CONFIRM_SECONDS` | `--uncertain-confirm-seconds` | 180 (не меньше 2 × `RWMS_TIMEOUT_SECONDS`) | сколько перечитывать панель после `DeleteUser`/`UpdateUser(DISABLED)` с неизвестным исходом; блокировка `users` всё это время держится |
+| `UNCERTAIN_QUARANTINE_HOURS` | `--uncertain-quarantine-hours` | 24 (мин. 1) | раньше этого срока с момента запроса запись uncertain автоматически не снимается |
+| `FREE_SETTLE_SECONDS` | `--free-settle-seconds` | 180 (мин. 120) | `free_inactive`: пауза между фазой 1 (`DISABLED`) и фазой 2 (удаление), один раз на партию; не меньше интервала обновления онлайна/трафика панелью |
+| `STATE_PATH` | `--state-path` | `report/rw-cleaner-free-disabled.json` | файл состояния: подписки, отключённые и ещё не доведённые до конца, и записи uncertain/pending (журнал упреждающей записи); **на постоянном томе** (формат v3; файлы v1/v2 читаются, запись v2 без `state` = uncertain) |
+| `STREAM_TIMEOUT_SECONDS` | `--stream-timeout-seconds` | 60 | таймаут страницы StreamUsers |
+| `REPORT_PATH` | `--report-path` | `report/rw-cleaner-<mode>-<время>.csv` | путь CSV-отчёта |
+| `USERNAME_ALLOWLIST` | `--username-allowlist` | пусто (все) | через запятую: рассматривать только этих |
+
+Только флагами командной строки (переменные окружения их не включают —
+`EXECUTE=true` игнорируется намеренно): `--execute`, `--full-scan`,
+`--clear-uncertain <panel_uuid>` (только вместе с `--execute`).
+
+Для `free_inactive` срок неактивности берётся из runtime-настройки
+`free_tier_inactive_days` (по умолчанию 30), а не из env; меньше 30 дней не
+бывает (жёсткий нижний предел).
+
+Удалённые настройки: `PENDING_PAYMENT_GRACE_HOURS` (заменена
+`RECENT_PAYMENT_DAYS`); `--include-orphans` (сироты не удаляются никогда —
+флаг теперь ошибка настроек). Минимум `GRACE_DAYS` поднят с 30 до 45, дефолт —
+до 90.
+
+В dry-run соединения с PostgreSQL открываются в режиме только чтения
+(`postgresql_readonly`), так что запись невозможна даже по ошибке.
+
+## Запуск
 
 ```bash
-GRACE_DAYS=30
-PENDING_PAYMENT_GRACE_HOURS=48
-PAGE_SIZE=500
-MAX_DELETIONS=25
-USERNAME_ALLOWLIST=
+# dry-run (по умолчанию), полный обзор кандидатов первой ступени
+python main.py --full-scan
+
+# канарейка на своих аккаунтах
+python main.py --username-allowlist user-a,user-b --execute --max-deletions 2
+
+# обычный запуск первой ступени
+python main.py --execute --max-deletions 25
+
+# бесплатный тариф
+python main.py --mode free_inactive --execute
+
+# после ручного разбора записи uncertain (код 6) — снять её и выйти
+python main.py --execute --clear-uncertain <panel_uuid>
 ```
 
-`GRACE_DAYS` cannot be lower than 30.
+## Безопасная выкатка
 
-## Run
+Порядок обязателен; переходить к следующему шагу только если предыдущий
+прошёл чисто.
 
-Dry-run:
+0. **Предусловия.**
+   - В проде уже работают сервисы, восстанавливающие подписку из архива
+     (оплата, бот, сайт, user-notify и т. д. — правило «панель NOT_FOUND →
+     открытый архив → `apply_archive` → AddUser → `mark_restored`»), RWMS и
+     панель принимают `short_uuid`/ключи в `AddUser`. Без этого удаление
+     фактически необратимо — не запускать `--execute`.
+   - Применена миграция с таблицами `subscription_archives` и
+     `free_tier_access`; submodule `common` в этом репо поднят до коммита с
+     `subscription_archive.py`, `free_tier.py` и `stream_users`.
+   - Свежий бэкап основной БД (архив хранится в ней: потеря БД = потеря
+     ссылок) и свежий успешный бэкап панели.
+1. **Dry-run на проде.** `python main.py --full-scan` (без `--execute` — БД
+   только на чтение, в панели только чтение). Посмотреть итог и распределение
+   причин в логе.
+2. **Ревью отчёта.** Выборочно проверить кандидатов вручную в панели и в
+   админке: истёк давно, не платил, не заблокирован, не в процессе оплаты.
+   Проверить, что `expire_mismatch`, `not_restorable` и сироты объяснимы.
+   Подобрать `MAX_CANDIDATE_RATIO` (для `free_inactive` —
+   `MAX_FREE_CANDIDATE_RATIO`) чуть выше фактической доли кандидатов.
+3. **Канарейка на своих аккаунтах.** Завести 1–2 тестовых аккаунта с
+   истёкшей подпиской старше срока хранения, затем
+   `--username-allowlist <свои> --execute --max-deletions 2`. Проверить:
+   строка в `subscription_archives`, подписки нет в панели; оплатить/продлить
+   — подписка вернулась с **той же** ссылкой, клиент (Happ / v2rayTun /
+   наше приложение) работает без переустановки; у архива проставлен
+   `restored_at`.
+4. **Ступени по очереди:** `never_connected` → `never_paid` → `all`. На каждой
+   — снова dry-run + ревью отчёта, потом `--execute`.
+5. **Размер партий.** Начать с `--max-deletions 5–10` за запуск, затем 25;
+   выше — только после нескольких спокойных дней. Удаления за сутки держать
+   маленькими (ориентир — не больше ~5% пользователей панели в сутки): бэкап
+   панели (`monkey-island-devops/servers/mi.fornex.rwp/backup-and-upload-s3.sh`,
+   каждые 2 часа) считает дамп битым и **не загружает** его, если он меньше
+   70% предыдущего удачного. После каждого запуска с `--execute` убедиться,
+   что следующий бэкап панели прошёл проверку.
+6. **free_inactive** — только после включения бесплатного тарифа и по той же
+   схеме: dry-run → ревью → канарейка → маленькие партии. Перед первым
+   запуском убедиться, что `free_tier_external_squad_uuid` задан (иначе код 2)
+   и что все бесплатные подписки в панели действительно на этом внешнем
+   отряде (подписка с любым тегом, даже `FREE`, защищена правилом
+   `owner_tagged`). `STATE_PATH` — на постоянном томе. На канарейке
+   проверить: в логе `disabled (phase 1)` → пауза `FREE_SETTLE_SECONDS` →
+   `deleted`; подключиться с тестового аккаунта во время паузы — подписка
+   должна вернуться в `ACTIVE` (`skipped:activity_since_disable`,
+   `reenable=reenabled`).
+7. **Теги владельца.** В отчёте dry-run проверить, что все подписки с ручными
+   пометками («вечная ссылка», «знакомый» и т. п.) пропущены с причиной
+   `owner_tagged`; если владелец хочет разрешить удаление такой подписки —
+   сначала снять тег в панели.
+
+Следить в логах за `AUTO-STOP`, `CRITICAL` (в том числе `DELETE UNCERTAIN`,
+`DISABLE UNCERTAIN`, `uncertain DELETE landed ... WITHOUT an open archive`,
+`RE-ENABLE FAILED`), `execution failed` и кодами выхода 1/3/4/5/6. Код 6 —
+разобрать вручную: проверить подписку в панели (статус, есть ли она),
+`users.expire_at`, открытый архив; при необходимости включить/восстановить
+подписку; затем дождаться карантина или снять запись `--clear-uncertain`.
+Пока запись есть, очиститель ничего нового не удаляет и не отключает, но
+каждый запуск перепроверяет её — запускать по cron можно и нужно.
+
+## Влияние на другие сервисы
+
+- **Восстановление.** После удаления строка `users` остаётся. Любой путь,
+  который не находит подписку в панели и создаёт её (оплата — payment
+  `rwms_tasks_processor.py`, реферальные бонусы бота и user-notify, промокоды,
+  админка, бесплатный тариф), обязан брать открытый архив
+  (`open_archive_query` → `apply_archive` → `AddUser` → `mark_restored`): тогда
+  подписка возвращается с той же ссылкой и ключами. Это реализуется в самих
+  сервисах (см. общий план 2026-10-11), rw-cleaner только пишет архив.
+- **User-notify** считает уведомления по `users.expire_at` — удаление из
+  панели их не ломает. Подписки старше 45+ дней уже прошли всю серию win-back;
+  действующий оффер блокирует удаление.
+- **Бот / сайт** при отсутствии подписки в панели предлагают продление;
+  продление восстанавливает подписку из архива.
+- **Удаление аккаунта** (`account_deletion_requests`): pending/completed —
+  подписка не трогается.
+- Окно гонки «пользователь оплатил ровно между перепроверкой и DeleteUser»
+  закрыто блокировкой строки `users` (`FOR UPDATE NOWAIT`) с повторной
+  проверкой под ней и `DeleteUser` внутри той же транзакции: продление,
+  закоммиченное раньше, отменяет удаление; продление, которое пишет в `users`
+  позже, ждёт COMMIT очистителя и восстанавливает подписку из архива. Кроме
+  того, любая платёжная попытка за последние `RECENT_PAYMENT_DAYS` блокирует
+  удаление. Пути, которые продлевают подписку в панели, **не трогая**
+  строку `users` в той же транзакции, блокировкой не сериализуются —
+  для них остаётся перечитывание панели под блокировкой и восстановление из
+  архива при NOT_FOUND. Блокировка держится на время двух вызовов RWMS
+  (перечитывание + `DeleteUser`/`UpdateUser`, каждый с
+  `RWMS_TIMEOUT_SECONDS`), а при неизвестном исходе — ещё до
+  `UNCERTAIN_CONFIRM_SECONDS` (по умолчанию 180 с) на подтверждение: столько
+  может ждать `UPDATE users` конкурирующего пути (платёж этого же
+  пользователя) — редкий случай; при выкатке убедиться, что таймауты
+  обработчиков платежей (payment) такое ожидание переживают.
+- **Страховка от запоздавшего `DELETE`** (`delete_uncertain`): если после
+  остановки запуска панель всё-таки выполнит принятый ранее `DELETE`, а
+  пользователь тем временем оплатил, сверка user-notify (`rwms_sync_checker`)
+  находит «в БД активна, в панели нет» с открытым архивом и восстанавливает
+  подписку из архива (та же ссылка и ключи) — это реализуется в user-notify
+  отдельно. Перепроверка записи uncertain пишет такой случай в лог (ERROR, без
+  архива — CRITICAL).
+- **Запоздавший `DISABLE`** (`disable_uncertain`): user-notify такую
+  подписку только **фиксирует** (`status_diff` — «в БД активна, `DISABLED` в
+  панели», в админке), но не включает; включает обратно сам rw-cleaner при
+  следующем запуске (перепроверка записи uncertain). Поэтому после кода 6
+  следующий запуск не откладывать.
+- **`DISABLED` на время паузы (`free_inactive`)**: 2–3 минуты бесплатная
+  подписка неактивного пользователя отключена. Бот/кабинет в это время
+  покажут «подписка отключена»; оплата (выход с бесплатного тарифа по
+  правилу `activate = нет строки user_blocks`) включает её сама — фаза 2 это
+  видит (`status_changed_since_disable`) и ничего не трогает. Сверка
+  user-notify `status_diff` не срабатывает: у бесплатных `users.expire_at` не
+  в будущем. Тег, отряды, срок и лимиты rw-cleaner не меняет.
+
+## Тесты
 
 ```bash
-python main.py
+.venv/bin/python -m pytest
 ```
 
-Real deletion:
-
-```bash
-python main.py --execute
-```
-
-Very conservative first production run:
-
-```bash
-python main.py --execute --max-deletions 3
-```
-
-Test one known username only:
-
-```bash
-python main.py --username-allowlist 4f1d... --execute --max-deletions 1
-```
-
-## Tests
-
-```bash
-pytest
-```
-
-
+Тесты используют SQLite в памяти с полной схемой (`JSONB` → `JSON`, явные id
+для BIGINT-ключей) и поддельный RWMS: каждое правило, ступени, оба режима,
+порядок «архив закоммичен → блокировка `users` → DeleteUser → COMMIT»,
+подтверждение `DeleteUser` с неизвестным исходом под блокировкой
+(`delete_uncertain`, остановка запуска, предел опросов), записи uncertain
+(запись до перечитываний — в том числе при убитом процессе, остановка,
+неопределённый `DISABLE` не снимается при `ACTIVE`, запоздавший `DISABLE`
+у оплатившего включается следующим запуском, `user_blocks`, карантин,
+недоступная панель, запоздавший `DELETE` у активного/неактивного, запрет
+новых изменений в обоих режимах и в середине партии, dry-run,
+`--clear-uncertain`, файл v1/v2), журнал упреждающей записи (`pending` в
+файле до `DeleteUser`/`UpdateUser`, переходы после подтверждения, сбой
+записи — запрос не уходит, `CancelledError`/`KeyboardInterrupt`/жёсткое
+падение во время `DELETE` и `DISABLE` — следующий запуск ничего нового не
+делает, держит карантин и включает обратно запоздавший `DISABLE` у
+оплатившего; файл v3), двухфазное удаление
+`free_inactive` (одна пауза на партию, только статус в `UpdateUser`,
+активность/оплата/блокировка за паузу, обратное включение при любом сбое,
+восстановление после упавшего запуска, файл состояния), нижний предел
+`free_tier_inactive_days`, сироты никогда не удаляются,
+гонка с продлением до блокировки, бан/grace, сбои и идемпотентность,
+блокировка запуска, автоостановка, dry-run без записей, отчёт и отсутствие секретов в
+логах.
 
 ## Стабы RWMS
 

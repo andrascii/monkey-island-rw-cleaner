@@ -79,6 +79,8 @@ message UserResponse {
   repeated ActiveInternalSquad active_internal_squads = 27;
   google.protobuf.Timestamp created_at = 28;
   google.protobuf.Timestamp updated_at = 29;
+  optional string tag = 30;
+  optional string external_squad_uuid = 31;
 }
 
 message GetUserByUuidRequest {
@@ -112,6 +114,15 @@ message AddUserRequest {
   // подписок, включается настройкой сайта trial_traffic_limit_enabled).
   // Не задано — панель создаёт подписку без лимита, как раньше.
   optional int64 traffic_limit_bytes = 13;
+  // Восстановление подписки из архива (rw-cleaner): та же ссылка
+  // (short_uuid) и те же ключи, установленные у клиента конфиги продолжают
+  // работать. Не заданы — панель генерирует новые, как раньше.
+  optional string short_uuid = 14;
+  optional string vless_uuid = 15;
+  optional string trojan_password = 16;
+  optional string ss_password = 17;
+  // Внешний отряд панели (шаблон конфига, лимит устройств) — бесплатный тариф.
+  optional string external_squad_uuid = 18;
 }
 
 message UpdateUserRequest {
@@ -127,6 +138,8 @@ message UpdateUserRequest {
   optional string email = 10;
   optional int64 hwid_device_limit = 11;
   repeated string active_internal_squads = 12;
+  // Внешний отряд панели (бесплатный тариф ↔ платный). Не задан — не меняется.
+  optional string external_squad_uuid = 13;
 }
 
 message GetAllUsersRequest {
@@ -137,6 +150,22 @@ message GetAllUsersRequest {
 message GetAllUsersReply {
   repeated UserResponse users = 1;
   double total = 2;
+}
+
+// Пользователи по курсору (GET /api/users/stream панели, keyset по id):
+// только с нужным статусом / тегом / внешним отрядом, без полного перебора.
+message StreamUsersRequest {
+  int32 size = 1; // до 1000; 0 — панельный дефолт (250)
+  optional int64 cursor = 2; // next_cursor прошлого ответа
+  optional UserStatus status = 3;
+  optional string tag = 4;
+  optional string external_squad_uuid = 5;
+}
+
+message StreamUsersReply {
+  repeated UserResponse users = 1;
+  optional int64 next_cursor = 2;
+  bool has_more = 3;
 }
 
 message DeleteUserRequest {
@@ -245,6 +274,24 @@ message DeleteUserHwidDeviceResponse {
   repeated HwidDevice devices = 2;
 }
 
+// --- Перевыпуск подписки (личный кабинет) ---
+// Единственное исключение из правила «не перевыпускать ключи»: явное
+// действие владельца подписки в кабинете. Панель генерирует новый
+// short_uuid и новые credentials — старая ссылка подписки и старые
+// конфиги перестают работать на всех устройствах. Срок, статус, сквады
+// и лимиты подписки не меняются.
+message RevokeUserSubscriptionRequest {
+  string uuid = 1;
+}
+
+// Сброс использованного трафика подписки (POST /users/{id}/actions/reset-traffic):
+// used_traffic обнуляется, LIMITED снова ACTIVE; срок, отряды, лимит и ключи не
+// меняются. Нужен при переходе на бесплатный тариф: его месячный лимит должен
+// начинаться с нуля, а не с трафика, накопленного за пробный / платный срок.
+message ResetUserTrafficRequest {
+  string uuid = 1;
+}
+
 // Панельные настройки HWID (из /api/subscription-settings панели):
 // enabled — включён ли учёт устройств, fallback_device_limit — глобальный
 // лимит устройств для подписок без личного hwid_device_limit.
@@ -260,6 +307,7 @@ service RwManager {
   rpc AddUser(AddUserRequest) returns (UserResponse) {}
   rpc UpdateUser(UpdateUserRequest) returns (UserResponse) {}
   rpc GetAllUsers(GetAllUsersRequest) returns (GetAllUsersReply) {}
+  rpc StreamUsers(StreamUsersRequest) returns (StreamUsersReply) {}
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {}
 
   rpc GetInbounds(Empty) returns (GetInboundsResponse) {}
@@ -282,4 +330,10 @@ service RwManager {
   // Панельные настройки HWID: нужны кабинету, чтобы показать реальный
   // лимит устройств подписки, когда личный hwid_device_limit не задан.
   rpc GetHwidSettings(Empty) returns (GetHwidSettingsResponse) {}
+
+  // Перевыпуск подписки по явному действию владельца в кабинете:
+  // POST /api/users/{uuid}/actions/revoke панели. Ответ — обновлённый
+  // пользователь с новым short_uuid и subscription_url.
+  rpc RevokeUserSubscription(RevokeUserSubscriptionRequest) returns (UserResponse) {}
+  rpc ResetUserTraffic(ResetUserTrafficRequest) returns (UserResponse) {}
 }
