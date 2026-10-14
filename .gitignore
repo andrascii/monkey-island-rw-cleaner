@@ -4,3 +4,5 @@ __pycache__/
 log/
 .env
 report/
+docker/*.tar
+docker/*.tar.new

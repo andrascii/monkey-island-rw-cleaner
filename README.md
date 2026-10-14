@@ -567,6 +567,51 @@ python main.py --mode free_inactive --execute
 python main.py --execute --clear-uncertain <panel_uuid>
 ```
 
+### Docker на сервере
+
+Сервис живёт на `mi.fornex.app` в `/srv/monkey-island/rw-cleaner` (рядом с
+RWMS, `network_mode: host`). Это не демон: каждый запуск — одноразовый
+контейнер `docker compose run --rm`, ничего не висит в `docker ps`.
+
+Выкатка (локально, из любого каталога):
+
+```bash
+./docker/deploy.sh               # сборка amd64 + заливка + docker load
+./docker/deploy.sh --skip-build  # залить уже собранный tar
+```
+
+`deploy.sh` кладёт на сервер `docker-compose.yml`, `run.sh`, `logs.sh`,
+`.env.example` (`.env` не трогает), заливает tar докачиваемо
+(`rsync --partial`, повторы при обрывах) во временный `*.new`, сверяет sha256,
+меняет tar (старый — в единственный `.bak`) и делает `docker load`. Ничего не
+запускает. `SSH_HOST` / `REMOTE_DIR` переопределяются через env.
+
+Первый раз на сервере: `cp .env.example .env` и заполнить `DATABASE_URL`
+(те же данные, что `MI_UN_POSTGRES_*` у user-notify, драйвер
+`postgresql+psycopg2`, спецсимволы пароля URL-кодировать) и `RWMS_*`.
+
+Запуск на сервере (`cd /srv/monkey-island/rw-cleaner`):
+
+```bash
+./run.sh --full-scan                        # dry-run, режим expired
+./run.sh --mode free_inactive --full-scan   # dry-run, бесплатный тариф
+./logs.sh                                   # хвост log/rw-cleaner.log
+```
+
+`run.sh` передаёт аргументы в `main.py` как есть и печатает код выхода с
+расшифровкой. **`--execute` в `run.sh` заблокирован** (код 2, docker не
+вызывается), пока не разрешён явно:
+`RW_CLEANER_ALLOW_EXECUTE=yes ./run.sh --execute --max-deletions 5` — это
+второй замок поверх dry-run по умолчанию на время выкатки.
+
+Логи — `log/rw-cleaner.log`, CSV-отчёты и файл состояния (`STATE_PATH`,
+журнал упреждающей записи) — `report/`; оба каталога — bind-mount на хост,
+переживают пересоздание контейнера и новые образы. `report/` не удалять:
+потеря файла состояния = потеря записей pending/uncertain.
+
+Cron не настроен: пока запуски ручные (dry-run → ревью отчёта, см.
+«Безопасная выкатка»).
+
 ## Безопасная выкатка
 
 Порядок обязателен; переходить к следующему шагу только если предыдущий
@@ -711,7 +756,10 @@ python main.py --execute --clear-uncertain <panel_uuid>
 `free_tier_inactive_days`, сироты никогда не удаляются,
 гонка с продлением до блокировки, бан/grace, сбои и идемпотентность,
 блокировка запуска, автоостановка, dry-run без записей, отчёт и отсутствие секретов в
-логах.
+логах. `tests/test_docker_scripts.py` — Docker-обвязка с фейковым `docker` в
+`PATH`: `run.sh` не вызывает docker с `--execute` без
+`RW_CLEANER_ALLOW_EXECUTE=yes`, передаёт аргументы и код выхода, отказывает без
+`.env`; `.dockerignore` не пускает в образ `.env`, тесты, логи и отчёты.
 
 ## Стабы RWMS
 

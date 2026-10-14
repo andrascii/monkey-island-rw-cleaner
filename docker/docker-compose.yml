@@ -1,0 +1,17 @@
+services:
+  rw-cleaner:
+    image: monkey-island-rw-cleaner:v0.1
+    # Одноразовый запуск: ./run.sh (docker compose run --rm), не `up`.
+    restart: "no"
+    # RWMS слушает localhost:50052 на этом же сервере.
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      # Каталоги на хосте: логи и отчёты переживают пересоздание контейнера.
+      # report/ хранит и файл состояния (STATE_PATH, журнал упреждающей
+      # записи) — терять его нельзя.
+      - ./log:/app/log
+      - ./report:/app/report
+    # Даём допройти текущему запросу к панели при docker stop.
+    stop_grace_period: 5m
