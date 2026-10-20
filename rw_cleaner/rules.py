@@ -32,6 +32,7 @@ from common.models.db import CP_PAYMENT_STATUS_PARTIALLY_REFUNDED
 from common.models.db import CP_PAYMENT_STATUS_REFUNDED
 from common.models.db import AccountDeletionRequest
 from common.models.db import CpPayment
+from common.models.db import EventLog
 from common.models.db import FreeTierAccess
 from common.models.db import User
 from common.models.db import UserBlock
@@ -67,8 +68,16 @@ PAID_CP_STATUSES = (
     CP_PAYMENT_STATUS_PARTIALLY_REFUNDED,
 )
 
+# Счёт из бота: при нажатии тарифа бот пишет event_logs.create_invoice_<slug>
+# (handlers/tariffs.py). У CloudPayments это ЕДИНСТВЕННЫЙ след неоплаченного
+# счёта бота — строка cp_payments появляется только на Pay, попытки сайта
+# (website_payment_attempts) бот не пишет. Свежий такой счёт = пользователь,
+# возможно, прямо сейчас платит (ревью CP, круг 1). Префикс — с autoescape
+# («_» в LIKE — любой символ).
+BOT_INVOICE_EVENT_PREFIX = "create_invoice"
+
 # Таблицы, по которым собираются платёжные факты (ступени, недавняя
-# активность, автоплатёж). Если хотя бы одна не читается (миграция ещё не
+# активность, автоплатёж; event_logs — счета бота). Если хотя бы одна не читается (миграция ещё не
 # применена — например cp_payments / cp_recurrent_payments до e07e3968ff54),
 # платёжное состояние НЕОДНОЗНАЧНО: «нет строк» нельзя отличить от «нет
 # таблицы», поэтому запуск останавливается до перебора панели
@@ -83,6 +92,7 @@ PAYMENT_FACT_MODELS = tuple(
             WataTransaction,
             WebsitePaymentAttempt,
             CpPayment,
+            EventLog,
             *RECURRENT_CHAIN_MODELS,
         )
     )
@@ -197,7 +207,9 @@ def recent_payment_activity(
     session: Session, user_id: int, now: datetime, recent_days: int
 ) -> Optional[str]:
     """Признак недавней платёжной активности (любой статус) — пользователь,
-    возможно, прямо сейчас платит. None — активности нет."""
+    возможно, прямо сейчас платит. None — активности нет. Кроме платёжных
+    таблиц — счёт, выставленный в боте (event_logs create_invoice_*): счёт
+    CloudPayments из бота до оплаты не оставляет других следов в БД."""
     cutoff = now - timedelta(days=recent_days)
     if _exists(
         session,
@@ -229,6 +241,13 @@ def recent_payment_activity(
         WebsitePaymentAttempt.created_at >= naive_utc(cutoff),
     ):
         return "recent_website_payment_attempt"
+    if _exists(
+        session,
+        EventLog.user_id == user_id,
+        EventLog.event_type.startswith(BOT_INVOICE_EVENT_PREFIX, autoescape=True),
+        EventLog.timestamp >= naive_utc(cutoff),
+    ):
+        return "recent_bot_invoice"
     return None
 
 
