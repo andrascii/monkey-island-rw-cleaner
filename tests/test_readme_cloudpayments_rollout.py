@@ -37,7 +37,10 @@ def test_readme_has_shared_cloudpayments_rollout_block():
 def test_rollback_paragraph_requires_user_notify_mirror_switch():
     paragraph = _rollback_paragraph()
     assert "НИКАКОЙ сервис не откатывается на образ со старым common" in paragraph
-    assert "CP_CHARGE_ENABLED=false в yk-recurrent вместе с MI_UN_CP_CHARGE_ENABLED=false в user-notify" in paragraph
+    assert (
+        "CP_CHARGE_ENABLED=false в yk-recurrent — аварийный рубильник; выставлять ТОЛЬКО "
+        "вместе с MI_UN_CP_CHARGE_ENABLED=false в user-notify (и перезапуском обоих)"
+    ) in paragraph
     # Круг 3: один рубильник yk-recurrent напоминаний НЕ возвращает.
     assert "напоминания им теперь приходят" not in paragraph
     # Рубильник — аварийный, не обычный шаг отката (rw-cleaner, круг 1).
@@ -49,3 +52,23 @@ def test_rw_cleaner_old_image_only_dry_run_after_first_cp_payment():
     start = text.index("### Порядок выката CloudPayments")
     section = text[start:start + 4000]
     assert "только dry-run, без `--execute`" in section
+
+
+# Общий абзац выката/отката (R-DOCS) — байт-в-байт одинаковый в README
+# payment, yk-recurrent, сайта (и docker/website/PRODUCTION.md), бота,
+# user-notify, rw-cleaner, ip-guard. Тот же SHA-256 стоит в тестах соседних
+# сервисов: правка абзаца — во всех README сразу и новый хэш во всех тестах.
+ROLLOUT_BLOCK_START = "1. common сливается первым; бот стартует первым и применяет миграцию e07e3968ff54.\n"
+ROLLOUT_BLOCK_END = "при выключенном CP списатель шлёт алерт при старте и раз в\nчас.\n"
+ROLLOUT_BLOCK_SHA256 = "e8b5aed0261eff2263d2138343b5a69e98137dc4901c4dd70a69eaf82b851863"
+
+
+def test_rollout_block_is_byte_identical_across_services():
+    import hashlib
+
+    raw = README.read_text(encoding="utf-8")
+    assert raw.count(ROLLOUT_BLOCK_START) == 1
+    start = raw.index(ROLLOUT_BLOCK_START)
+    end = raw.index(ROLLOUT_BLOCK_END, start) + len(ROLLOUT_BLOCK_END)
+    block = raw[start:end]
+    assert hashlib.sha256(block.encode("utf-8")).hexdigest() == ROLLOUT_BLOCK_SHA256
