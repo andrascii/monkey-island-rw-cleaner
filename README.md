@@ -363,9 +363,11 @@
   успешного платежа;
 - `never_paid`: подключался, но ни одного успешного платежа
   (`yk_payments` succeeded/refunded, `cp_payments` в любом статусе —
-  `Completed`/`Refunded`/`PartiallyRefunded`, или оплаченная транзакция WATA;
-  возвраты считаются оплатой — консервативнее сегментов common, где
-  «платил» — только `succeeded`/`Completed`);
+  `Completed`/`Refunded`/`PartiallyRefunded`, или транзакция WATA
+  `Paid`/`Refunded`/`PartiallyRefunded` — при полном возврате payment переводит
+  её из `Paid` в `Refunded`); возвраты всех трёх шлюзов считаются оплатой —
+  консервативнее сегментов common, где «платил» — только
+  `succeeded`/`Completed`/`Paid`;
 - `all`: все, кто прошёл правила выше (в том числе когда-то платившие).
 
 **Сироты** (подписка в панели без строки `users`) **не удаляются никогда**:
@@ -879,11 +881,19 @@ user-notify (и перезапуском обоих), иначе владель�
 проверку платёжных таблиц на настоящем PostgreSQL (отдельная схема на
 запуск, удаляется после): цепочка и оплаты CloudPayments, отсутствующие
 таблицы CP — остановка, а не «оплат нет», счёт из бота (в том числе строка с
-`timestamp` из `server_default now()`, как пишет бот) блокирует удаление. Без переменной пропускается:
+`timestamp` из `server_default now()`, как пишет бот) блокирует удаление;
+полностью вернувшие деньги через WATA, ЮKassa и CloudPayments в ступенях
+`never_connected`/`never_paid` не удаляются (`tier_paid`). Без переменной пропускается.
+
+Только одноразовый PostgreSQL-контейнер — **никогда** не локальная дев-БД
+`127.0.0.1:5432` (она эталон для `alembic revision --autogenerate`):
 
 ```bash
-RW_CLEANER_TEST_PG_URL=postgresql+psycopg2://user:pass@127.0.0.1:5432/test \
+docker run --rm -d --name rwc-test-pg -p 127.0.0.1:55439:5432 \
+  -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=ykrtest postgres:16
+RW_CLEANER_TEST_PG_URL=postgresql+psycopg2://test:test@127.0.0.1:55439/ykrtest \
   .venv/bin/python -m pytest tests/test_postgres_payment_facts.py
+docker stop rwc-test-pg
 ```
 
 ## Стабы RWMS

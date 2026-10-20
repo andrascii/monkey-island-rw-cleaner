@@ -20,6 +20,7 @@ from common.models.db import YkPayment
 from common.models.db import YkRecurrentPayment
 from rw_cleaner.panel import snapshot_from_proto
 from rw_cleaner.rules import MIN_FREE_INACTIVE_DAYS
+from rw_cleaner.rules import PAID_WATA_STATUSES
 from rw_cleaner.rules import DbFacts
 from rw_cleaner.rules import RuleConfig
 from rw_cleaner.rules import TIER_ALL
@@ -561,6 +562,65 @@ def test_wata_paid_transaction_and_invoices(session_factory):
     assert paid.last_payment_at == days_ago(250)
     assert paid.recent_payment is None
     assert recent.recent_payment == "recent_wata_invoice"
+
+
+def _wata_tx(s, tid, order, status, paid_at):
+    s.add(
+        WataTransaction(
+            id=tid,
+            transaction_id=f"t{tid}",
+            transaction_type="CardCrypto",
+            terminal_public_id="tp",
+            transaction_status=status,
+            terminal_name="t",
+            amount=100,
+            currency="RUB",
+            order_id=order,
+            order_description="d",
+            commission=0,
+            payment_time=paid_at,
+        )
+    )
+
+
+def test_paid_wata_statuses_match_payment_credited_statuses():
+    # payment/wata_refunds.py: CREDITED_WATA_STATUSES = (Paid,
+    # PartiallyRefunded, Refunded) — по строке с этими статусами продление
+    # уже применено, то есть пользователь платил.
+    assert set(PAID_WATA_STATUSES) == {"Paid", "PartiallyRefunded", "Refunded"}
+
+
+@pytest.mark.parametrize("status", ["Paid", "Refunded", "PartiallyRefunded"])
+def test_refunded_wata_payment_counts_as_paid(session_factory, status):
+    # Ревью CP, круг 7, R1: при полном возврате payment переводит исходную
+    # транзакцию WATA из Paid в Refunded. Такой пользователь когда-то платил —
+    # как вернувшие деньги через ЮKassa/CloudPayments, он не попадает в
+    # never_* ступени.
+    with session_factory() as s:
+        u = add_user(s, f"wata-{status}", expire_at=days_ago(120))
+        _wata_invoice(s, 10, u.id, days_ago(150), days_ago(149), "o10")
+        _wata_tx(s, 10, "o10", status, days_ago(150))
+        s.commit()
+        facts_ = load_db_facts(s, snap(f"wata-{status}"), NOW, 14)
+    assert facts_.ever_paid
+    assert facts_.last_payment_at == days_ago(150)
+    for tier in (TIER_NEVER_CONNECTED, TIER_NEVER_PAID):
+        decision = expired(db=facts_, tier=tier)
+        assert not decision.candidate
+        assert decision.reason == "tier_paid"
+    assert expired(db=facts_, tier=TIER_ALL).candidate
+
+
+@pytest.mark.parametrize("status", ["Created", "Pending", "Declined"])
+def test_unpaid_wata_transaction_is_not_a_payment(session_factory, status):
+    with session_factory() as s:
+        u = add_user(s, f"wata-{status}", expire_at=days_ago(120))
+        _wata_invoice(s, 11, u.id, days_ago(150), days_ago(149), "o11")
+        _wata_tx(s, 11, "o11", status, days_ago(150))
+        s.commit()
+        facts_ = load_db_facts(s, snap(f"wata-{status}"), NOW, 14)
+    assert not facts_.ever_paid
+    assert facts_.last_payment_at is None
 
 
 def test_old_but_unexpired_wata_invoice_blocks(session_factory):

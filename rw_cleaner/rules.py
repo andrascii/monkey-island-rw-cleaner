@@ -57,7 +57,13 @@ TIERS = (TIER_NEVER_CONNECTED, TIER_NEVER_PAID, TIER_ALL)
 # common/models/segments.py) плюс возвращённый — консервативнее: вернувший
 # деньги всё равно когда-то платил и в never_* ступени не попадает.
 PAID_YK_STATUSES = ("succeeded", "refunded")
-PAID_WATA_STATUSES = ("Paid",)
+# WATA: payment при полном возврате переводит исходную транзакцию из Paid в
+# Refunded (wata_refunds.py), PartiallyRefunded учитывается защитно — тот же
+# набор, что CREDITED_WATA_STATUSES в payment. Без возвратных статусов
+# полностью вернувший деньги через WATA выглядел бы «никогда не платившим» и
+# попадал бы в never_* ступени, в отличие от ЮKassa/CloudPayments (ревью CP,
+# круг 7, R1).
+PAID_WATA_STATUSES = ("Paid", "PartiallyRefunded", "Refunded")
 # CloudPayments: строка cp_payments появляется только на успешную оплату
 # (уведомление Pay), возврат меняет её статус. Сегменты считают «платил» только
 # Completed, rw-cleaner — консервативнее (как refunded у ЮKassa): любой статус,
