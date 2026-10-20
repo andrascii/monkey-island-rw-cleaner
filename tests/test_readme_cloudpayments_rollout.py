@@ -60,7 +60,7 @@ def test_rw_cleaner_old_image_only_dry_run_after_first_cp_payment():
 # сервисов: правка абзаца — во всех README сразу и новый хэш во всех тестах.
 ROLLOUT_BLOCK_START = "1. common сливается первым; бот стартует первым и применяет миграцию e07e3968ff54.\n"
 ROLLOUT_BLOCK_END = "горизонте напоминаний (3 дня).\n"
-ROLLOUT_BLOCK_SHA256 = "007886e1d34341d20198d13537a4a5b2f74bd5e352706e3616df64f05c9e5948"
+ROLLOUT_BLOCK_SHA256 = "da9900ad46e6604b014772c0798bb40c934a479bd1b5f01539e4d8fde1e081a0"
 
 
 def test_rollout_block_is_byte_identical_across_services():
@@ -83,10 +83,14 @@ def test_rollout_block_names_both_bots_and_actual_alert_behaviour():
     flat = " ".join(raw[start:end].split())
     assert "Оба бота (VPN и VPS) — по одному: второй — сразу после миграции первого" in flat
     assert (
-        "алерт при старте (если CP выключен из-за настройки — в любом случае) и раз в час, "
+        "алерт при старте, если есть цепочки CP (если CP выключен из-за настройки — в любом "
+        "случае), и раз в час, "
         "пока есть цепочки CP в горизонте напоминаний (3 дня)."
     ) in flat
     assert "алерт при старте и раз в час." not in flat
+    # Круг 7, D1: при явном CP_CHARGE_ENABLED=false алерт при старте —
+    # только если цепочки CP есть (как __alert_cp_charge_disabled_at_start).
+    assert "алерт при старте (если CP выключен" not in flat
 
 
 def test_pg_test_example_never_points_at_local_dev_db():
