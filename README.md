@@ -739,21 +739,34 @@ Cron не настроен: пока запуски ручные (dry-run → р
 
 ### Порядок выката CloudPayments (общий для всех сервисов)
 
-1. Слить common → бот: миграция `e07e3968ff54` (`cp_payments`,
-   `cp_recurrent_payments`) применяется при старте бота; после неё бот
-   только вперёд.
-2. **Сразу после миграции и ДО первых оплат CP** — payment, yk-recurrent,
-   сайт, user-notify, rw-cleaner, ip-guard на новом common: старые версии
-   считают CP-плательщиков неплатившими.
-3. Секрет заказов одинаковый во всех 4 сервисах (сайт, бот, payment,
-   yk-recurrent); `CP_CHARGE_ENABLED=true`.
-4. Терминалы, «Сохранять принудительно», уведомления в ЛК CP → включение
-   вариантов оплаты CP.
+1. common сливается первым; бот стартует первым и применяет миграцию e07e3968ff54.
+   После неё бот откатывается только вперёд. Миграцию применяет ТОЛЬКО бот — ни в одном
+   другом сервисе alembic не запускать.
+2. Сразу после миграции и ДО первой оплаты CP выкатываются payment, yk-recurrent, сайт,
+   user-notify, rw-cleaner, ip-guard на новом common.
+3. Секрет заказов одинаковый в 4 сервисах: payment MI_YKP_CP_ORDER_SECRET, сайт
+   CP_ORDER_SECRET, yk-recurrent CP_ORDER_SECRET, бот MI_VPN_BOT_CP_ORDER_SECRET —
+   сверка по строке лога «cloudpayments order secret fingerprint». yk-recurrent
+   CP_AUTOPAY_RETRY_DELAY_HOURS = payment MI_YKP_CP_AUTOPAY_RETRY_DELAY_HOURS.
+4. Терминалы в админке, «Сохранять принудительно» и уведомления (Check/Pay/Fail/Refund)
+   в ЛК CP → включение вариантов CP в «Способах оплаты».
 
-Откат: сначала убрать варианты CP и `CP_CHARGE_ENABLED=false`; бот после
-миграции не откатывается на образ без ревизии; старый yk-recurrent не видит
-флаги/awaiting CP. rw-cleaner: старый образ после первых оплат CP — только
-dry-run (см. гейт в предусловиях).
+Откат: сначала убрать варианты CP. После первой оплаты CP НИКАКОЙ сервис не
+откатывается на образ со старым common (старые версии считают CP-плательщиков
+неплатившими: rw-cleaner удалит подписки, ip-guard забанит, user-notify ограничит
+трафик, отмена/возврат не снимут цепочку CP). Аварийный рубильник —
+CP_CHARGE_ENABLED=false в yk-recurrent вместе с MI_UN_CP_CHARGE_ENABLED=false в
+user-notify (и перезапуск обоих): владельцы только CP-цепочек не продлеваются (ALERT в
+чат), напоминания им приходят (R-CONSENT, user-notify). Один CP_CHARGE_ENABLED=false
+без MI_UN_CP_CHARGE_ENABLED=false — у владельцев только CP-цепочек нет ни списания, ни
+напоминаний; то же, если yk-recurrent выключил CP сам (нет секрета или неверная
+настройка — ALERT при старте): выставить MI_UN_CP_CHARGE_ENABLED=false или починить
+настройку.
+
+Для rw-cleaner это значит: после первой оплаты CP старый образ (без CloudPayments,
+в том числе `.bak`-tar после `deploy.sh`) — только dry-run, без `--execute` (см. гейт
+в предусловиях). Сам rw-cleaner alembic не запускает: схему (`e07e3968ff54`) приносит
+бот, без неё очиститель останавливается с кодом 4. Ключевые факты общего абзаца держит тест `tests/test_readme_cloudpayments_rollout.py`.
 
 Следить в логах за `AUTO-STOP`, `CRITICAL` (в том числе `DELETE UNCERTAIN`,
 `DISABLE UNCERTAIN`, `uncertain DELETE landed ... WITHOUT an open archive`,
