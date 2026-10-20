@@ -59,8 +59,8 @@ def test_rw_cleaner_old_image_only_dry_run_after_first_cp_payment():
 # user-notify, rw-cleaner, ip-guard. Тот же SHA-256 стоит в тестах соседних
 # сервисов: правка абзаца — во всех README сразу и новый хэш во всех тестах.
 ROLLOUT_BLOCK_START = "1. common сливается первым; бот стартует первым и применяет миграцию e07e3968ff54.\n"
-ROLLOUT_BLOCK_END = "при выключенном CP списатель шлёт алерт при старте и раз в\nчас.\n"
-ROLLOUT_BLOCK_SHA256 = "e8b5aed0261eff2263d2138343b5a69e98137dc4901c4dd70a69eaf82b851863"
+ROLLOUT_BLOCK_END = "горизонте напоминаний (3 дня).\n"
+ROLLOUT_BLOCK_SHA256 = "007886e1d34341d20198d13537a4a5b2f74bd5e352706e3616df64f05c9e5948"
 
 
 def test_rollout_block_is_byte_identical_across_services():
@@ -72,3 +72,18 @@ def test_rollout_block_is_byte_identical_across_services():
     end = raw.index(ROLLOUT_BLOCK_END, start) + len(ROLLOUT_BLOCK_END)
     block = raw[start:end]
     assert hashlib.sha256(block.encode("utf-8")).hexdigest() == ROLLOUT_BLOCK_SHA256
+
+
+def test_rollout_block_names_both_bots_and_actual_alert_behaviour():
+    # Ревью CP, круг 4, D1: шаг 1 называет оба бота (VPN и VPS) по одному;
+    # фраза об алерте — как ведёт себя yk-recurrent после Y1.
+    raw = README.read_text(encoding="utf-8")
+    start = raw.index(ROLLOUT_BLOCK_START)
+    end = raw.index(ROLLOUT_BLOCK_END, start) + len(ROLLOUT_BLOCK_END)
+    flat = " ".join(raw[start:end].split())
+    assert "Оба бота (VPN и VPS) — по одному: второй — сразу после миграции первого" in flat
+    assert (
+        "алерт при старте (если CP выключен из-за настройки — в любом случае) и раз в час, "
+        "пока есть цепочки CP в горизонте напоминаний (3 дня)."
+    ) in flat
+    assert "алерт при старте и раз в час." not in flat
