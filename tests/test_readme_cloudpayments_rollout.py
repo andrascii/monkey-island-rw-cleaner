@@ -87,3 +87,14 @@ def test_rollout_block_names_both_bots_and_actual_alert_behaviour():
         "пока есть цепочки CP в горизонте напоминаний (3 дня)."
     ) in flat
     assert "алерт при старте и раз в час." not in flat
+
+
+def test_pg_test_example_never_points_at_local_dev_db():
+    # Ревью CP, круг 7, N2: 127.0.0.1:5432 — локальная дев-БД (эталон alembic
+    # autogenerate); пример PG-тестов — только одноразовый контейнер.
+    raw = README.read_text(encoding="utf-8")
+    lines = [line for line in raw.splitlines() if "RW_CLEANER_TEST_PG_URL=" in line]
+    assert lines
+    for line in lines:
+        assert "127.0.0.1:5432" not in line and "localhost:5432" not in line
+        assert "127.0.0.1:55439/ykrtest" in line
