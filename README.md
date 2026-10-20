@@ -52,6 +52,17 @@
    останавливается (код 6), ничего нового не отключается и не удаляется.
    Dry-run файл только читает и пишет ERROR, если там что-то осталось (есть
    записи uncertain — код 6, перебор и отчёт всё равно делаются).
+   **Проверка платёжных таблиц** (оба режима, в том числе dry-run): каждая
+   таблица платёжных фактов (`yk_payments`, `wata_invoices`,
+   `wata_transactions`, `website_payment_attempts`, `cp_payments` и все
+   таблицы цепочек автоплатежей `common/autopay_chains.RECURRENT_CHAIN_MODELS`
+   — `yk_recurrent_payments`, `cp_recurrent_payments`) читается `SELECT` всех
+   колонок модели с `LIMIT 0`. Не читается хоть одна (миграция не применена —
+   например, CloudPayments до `e07e3968ff54`) — платёжное состояние
+   неоднозначно: «оплат/цепочек CP нет» нельзя отличить от «таблицы нет».
+   CRITICAL `AUTO-STOP: payment state is ambiguous` с перечнем таблиц,
+   `stop_reason=payment_schema_unreadable`, код 4, панель не перебирается,
+   ничего не отключается и не удаляется.
 2. **Перебор панели** через `StreamUsers` (курсор, фильтр на стороне панели):
    `expired` — только `status=EXPIRED`, `free_inactive` — только подписки на
    внешнем отряде FREE (`external_squad_uuid = system_settings.free_tier_external_squad_uuid`).
@@ -312,8 +323,8 @@
 | нет записи в `user_blocks` | `user_blocked` |
 | нет запроса на удаление аккаунта в статусе `pending` или `completed` | `account_deletion_*` |
 | нет действующего оффера win-back (`winback_offers.valid_until` в будущем) | `winback_offer_active` |
-| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts` | `recent_yk_payment`, `recent_wata_invoice`, `recent_website_payment_attempt` |
-| нет строки `yk_recurrent_payments` (сохранённая карта) | `recurrent_payment_saved` |
+| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` (любой статус, по `created_at` или `captured_at`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts` | `recent_yk_payment`, `recent_cp_payment`, `recent_wata_invoice`, `recent_website_payment_attempt` |
+| нет цепочки автоплатежа ни в одной таблице цепочек (`yk_recurrent_payments`, `cp_recurrent_payments` — `common/autopay_chains.autopay_exists_clause`, выполняется в запросе без деградации: нет таблицы = ошибка, а не «цепочек нет») | `recurrent_payment_saved` |
 | нет активного временного бана (`temporary_squad_bans.restored_at IS NULL`) | `temporary_squad_ban_active` |
 | нет активного grace-доступа (`grace_access_grants.restored_at IS NULL`) | `grace_access_active` |
 | нет `free_tier_access.on_free = true` | `free_tier_on_free` |
@@ -341,7 +352,10 @@
   `first_connected` и `online_at`, трафик за всё время 0, и ни одного
   успешного платежа;
 - `never_paid`: подключался, но ни одного успешного платежа
-  (`yk_payments` succeeded/refunded или оплаченная транзакция WATA);
+  (`yk_payments` succeeded/refunded, `cp_payments` в любом статусе —
+  `Completed`/`Refunded`/`PartiallyRefunded`, или оплаченная транзакция WATA;
+  возвраты считаются оплатой — консервативнее сегментов common, где
+  «платил» — только `succeeded`/`Completed`);
 - `all`: все, кто прошёл правила выше (в том числе когда-то платившие).
 
 **Сироты** (подписка в панели без строки `users`) **не удаляются никогда**:
@@ -523,7 +537,7 @@ operator ...`) со статусом, сроками с обеих сторон,
 | 1 | часть кандидатов не обработана (архив остался открытым — повтор в следующий запуск), есть `open_archive_mismatch` (нужен ручной разбор), не записан отчёт или не записалась упреждающая запись (`state_write_failed`: запрос не отправлен, запуск остановлен) |
 | 2 | ошибка настроек (аргументы; `free_inactive` без внешнего отряда FREE в `system_settings`) |
 | 3 | уже идёт другой запуск (advisory lock или `flock` файла состояния занят) |
-| 4 | автоостановка: доля сирот / доля кандидатов / серия ошибок |
+| 4 | автоостановка: доля сирот / доля кандидатов / серия ошибок / платёжные таблицы не читаются (`payment_schema_unreadable`, до перебора панели) |
 | 5 | перебор панели не завершён — ничего не удалялось |
 | 6 | нужен человек: `delete_uncertain` / `disable_uncertain` (исход `DeleteUser` / `UpdateUser(DISABLED)` не подтвердился или запрос прерван — `interrupted`), подтверждённый исход не удалось записать в файл, в файле состояния есть записи uncertain/pending (запуск ничего нового не делал; в dry-run — тоже 6), подписку, отключённую этим инструментом, не удалось включить обратно, или файл состояния не читается |
 
@@ -657,6 +671,11 @@ Cron не настроен: пока запуски ручные (dry-run → р
    - Применена миграция с таблицами `subscription_archives` и
      `free_tier_access`; submodule `common` в этом репо поднят до коммита с
      `subscription_archive.py`, `free_tier.py` и `stream_users`.
+   - С common, где есть CloudPayments (`cp_payments`,
+     `cp_recurrent_payments`, `autopay_chains.py`), — применена миграция
+     `e07e3968ff54` (её применяет бот на старте). Без неё rw-cleaner
+     останавливается до перебора панели с кодом 4
+     (`payment_schema_unreadable`) — это ожидаемо, а не сбой.
    - Свежий бэкап основной БД (архив хранится в ней: потеря БД = потеря
      ссылок) и свежий успешный бэкап панели.
 1. **Dry-run на проде.** `python main.py --full-scan` (без `--execute` — БД
@@ -785,12 +804,25 @@ Cron не настроен: пока запуски ручные (dry-run → р
 активность/оплата/блокировка за паузу, обратное включение при любом сбое,
 восстановление после упавшего запуска, файл состояния), нижний предел
 `free_tier_inactive_days`, сироты никогда не удаляются,
-гонка с продлением до блокировки, бан/grace, сбои и идемпотентность,
+гонка с продлением до блокировки, бан/grace, CloudPayments (оплата в любом
+статусе — «платил» для ступеней, недавняя оплата CP, цепочка CP блокирует
+удаление в обоих режимах и под блокировкой; нет таблиц CP — остановка до
+перебора, ничего не удалено и в dry-run), сбои и идемпотентность,
 блокировка запуска, автоостановка, dry-run без записей, отчёт и отсутствие секретов в
 логах. `tests/test_docker_scripts.py` — Docker-обвязка с фейковым `docker` в
 `PATH`: `run.sh` не вызывает docker с `--execute` без
 `RW_CLEANER_ALLOW_EXECUTE=yes`, передаёт аргументы и код выхода, отказывает без
 `.env`; `.dockerignore` не пускает в образ `.env`, тесты, логи и отчёты.
+
+`tests/test_postgres_payment_facts.py` выполняет платёжные запросы правил и
+проверку платёжных таблиц на настоящем PostgreSQL (отдельная схема на
+запуск, удаляется после): цепочка и оплаты CloudPayments, отсутствующие
+таблицы CP — остановка, а не «оплат нет». Без переменной пропускается:
+
+```bash
+RW_CLEANER_TEST_PG_URL=postgresql+psycopg2://user:pass@127.0.0.1:5432/test \
+  .venv/bin/python -m pytest tests/test_postgres_payment_facts.py
+```
 
 ## Стабы RWMS
 

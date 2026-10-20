@@ -421,6 +421,7 @@ def _yk(s, user_id, status, created, pid):
             captured_at=naive(created) if status == "succeeded" else None,
             payment_id=f"p{pid}",
             subscription_period="month",
+            shop_id="shop-1",
         )
     )
 
@@ -452,6 +453,7 @@ def test_load_db_facts_blocks_deletions_winback_recurrent_free(session_factory):
                 recurrent_payment_id="r1",
                 subscription_period="month",
                 captured_at=naive(days_ago(300)),
+                shop_id="shop-1",
             )
         )
         s.add(

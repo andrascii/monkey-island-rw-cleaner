@@ -18,13 +18,20 @@ from sqlalchemy import exists
 from sqlalchemy import func
 from sqlalchemy import or_
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from common.account_deletion import REQUEST_STATUS_COMPLETED
 from common.account_deletion import REQUEST_STATUS_PENDING
+from common.autopay_chains import RECURRENT_CHAIN_MODELS
+from common.autopay_chains import autopay_exists_clause
 from common.free_tier import active_ban_query
 from common.free_tier import active_grace_query
+from common.models.db import CP_PAYMENT_STATUS_COMPLETED
+from common.models.db import CP_PAYMENT_STATUS_PARTIALLY_REFUNDED
+from common.models.db import CP_PAYMENT_STATUS_REFUNDED
 from common.models.db import AccountDeletionRequest
+from common.models.db import CpPayment
 from common.models.db import FreeTierAccess
 from common.models.db import User
 from common.models.db import UserBlock
@@ -33,7 +40,6 @@ from common.models.db import WataTransaction
 from common.models.db import WebsitePaymentAttempt
 from common.models.db import WinbackOffer
 from common.models.db import YkPayment
-from common.models.db import YkRecurrentPayment
 from rw_cleaner.panel import PanelSnapshot
 
 MODE_EXPIRED = "expired"
@@ -51,6 +57,36 @@ TIERS = (TIER_NEVER_CONNECTED, TIER_NEVER_PAID, TIER_ALL)
 # деньги всё равно когда-то платил и в never_* ступени не попадает.
 PAID_YK_STATUSES = ("succeeded", "refunded")
 PAID_WATA_STATUSES = ("Paid",)
+# CloudPayments: строка cp_payments появляется только на успешную оплату
+# (уведомление Pay), возврат меняет её статус. Сегменты считают «платил» только
+# Completed, rw-cleaner — консервативнее (как refunded у ЮKassa): любой статус,
+# включая полный и частичный возврат.
+PAID_CP_STATUSES = (
+    CP_PAYMENT_STATUS_COMPLETED,
+    CP_PAYMENT_STATUS_REFUNDED,
+    CP_PAYMENT_STATUS_PARTIALLY_REFUNDED,
+)
+
+# Таблицы, по которым собираются платёжные факты (ступени, недавняя
+# активность, автоплатёж). Если хотя бы одна не читается (миграция ещё не
+# применена — например cp_payments / cp_recurrent_payments до e07e3968ff54),
+# платёжное состояние НЕОДНОЗНАЧНО: «нет строк» нельзя отличить от «нет
+# таблицы», поэтому запуск останавливается до перебора панели
+# (payment_schema_problems), а не считает «оплат CP нет». Цепочки автоплатежей
+# — из common/autopay_chains.RECURRENT_CHAIN_MODELS: новый шлюз попадает сюда
+# сам.
+PAYMENT_FACT_MODELS = tuple(
+    dict.fromkeys(
+        (
+            YkPayment,
+            WataInvoice,
+            WataTransaction,
+            WebsitePaymentAttempt,
+            CpPayment,
+            *RECURRENT_CHAIN_MODELS,
+        )
+    )
+)
 
 # Запросы на удаление аккаунта, при которых состояние считается
 # неоднозначным: pending — пользователь ещё может отменить; completed —
@@ -140,6 +176,23 @@ def _exists(session: Session, *criteria) -> bool:
     return bool(session.execute(select(exists().where(*criteria))).scalar())
 
 
+def payment_schema_problems(session: Session) -> list[str]:
+    """Таблицы PAYMENT_FACT_MODELS, которые не читаются (нет таблицы или
+    колонки модели — миграция не применена, либо любая другая ошибка БД).
+    Пустой список — платёжные факты собираются полностью. Каждая таблица
+    проверяется SELECT всех колонок модели с LIMIT 0 (только чтение); после
+    ошибки транзакция откатывается, чтобы проверить остальные."""
+    problems = []
+    for model in PAYMENT_FACT_MODELS:
+        try:
+            session.execute(select(*model.__table__.columns).limit(0)).all()
+        except SQLAlchemyError:
+            session.rollback()
+            problems.append(model.__tablename__)
+    session.rollback()
+    return problems
+
+
 def recent_payment_activity(
     session: Session, user_id: int, now: datetime, recent_days: int
 ) -> Optional[str]:
@@ -152,6 +205,15 @@ def recent_payment_activity(
         YkPayment.created_at >= naive_utc(cutoff),
     ):
         return "recent_yk_payment"
+    if _exists(
+        session,
+        CpPayment.user_id == user_id,
+        or_(
+            CpPayment.created_at >= naive_utc(cutoff),
+            CpPayment.captured_at >= naive_utc(cutoff),
+        ),
+    ):
+        return "recent_cp_payment"
     if _exists(
         session,
         WataInvoice.user_id == user_id,
@@ -182,7 +244,12 @@ def last_successful_payment(session: Session, user_id: int) -> Optional[datetime
         .where(WataInvoice.user_id == user_id)
         .where(WataTransaction.transaction_status.in_(PAID_WATA_STATUSES))
     ).scalar()
-    dates = [as_utc(v) for v in (last_yk, last_wata) if v is not None]
+    last_cp = session.execute(
+        select(func.max(func.coalesce(CpPayment.captured_at, CpPayment.created_at)))
+        .where(CpPayment.user_id == user_id)
+        .where(CpPayment.status.in_(PAID_CP_STATUSES))
+    ).scalar()
+    dates = [as_utc(v) for v in (last_yk, last_wata, last_cp) if v is not None]
     return max(dates) if dates else None
 
 
@@ -225,7 +292,13 @@ def load_db_facts(
             WinbackOffer.valid_until > naive_utc(now),
         ),
         recent_payment=recent_payment_activity(session, user_id, now, recent_days),
-        has_recurrent=_exists(session, YkRecurrentPayment.user_id == user_id),
+        # Цепочка автоплатежа в ЛЮБОЙ таблице (ЮKassa, CloudPayments):
+        # autopay_exists_clause выполняется в этом запросе без деградации —
+        # нет таблицы цепочек = ошибка БД (удаления не будет), а не «цепочек
+        # нет», как у common.autopay_chains.user_has_autopay.
+        has_recurrent=bool(
+            session.execute(select(autopay_exists_clause(user_id))).scalar()
+        ),
         on_free=None if free is None else bool(free.on_free),
         free_switched_at=None if free is None else as_utc(free.switched_at),
         ever_paid=last_payment_at is not None,

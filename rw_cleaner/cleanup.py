@@ -116,6 +116,7 @@ from rw_cleaner.rules import decide_free_inactive
 from rw_cleaner.rules import effective_free_inactive_days
 from rw_cleaner.rules import load_db_facts
 from rw_cleaner.rules import naive_utc
+from rw_cleaner.rules import payment_schema_problems
 from rw_cleaner.state import DEFAULT_STATE_PATH
 from rw_cleaner.state import OP_DELETE
 from rw_cleaner.state import OP_DISABLE
@@ -553,6 +554,26 @@ class Cleaner:
         self._inactive_days = effective
         return True
 
+    def _payment_schema_ready(self) -> bool:
+        """Все таблицы платёжных фактов читаются (rules.PAYMENT_FACT_MODELS).
+        Иначе платёжное состояние неоднозначно (например, миграция
+        cp_payments / cp_recurrent_payments ещё не применена: оплаты и
+        автоплатежи CloudPayments не видны) — ни перебора, ни удалений, ни
+        отключений в обоих режимах и в dry-run; exit code EXIT_AUTO_STOP."""
+        with self._session_factory() as session:
+            problems = payment_schema_problems(session)
+        if not problems:
+            return True
+        logger.critical(
+            "AUTO-STOP: payment state is ambiguous, payment tables are not "
+            "readable (migration not applied?); nothing scanned, disabled or "
+            "deleted %s",
+            kv(tables=",".join(problems)),
+        )
+        self.summary.stop_reason = "payment_schema_unreadable"
+        self.summary.exit_code = EXIT_AUTO_STOP
+        return False
+
     def _report_path(self, started_at: datetime) -> Path:
         if self.config.report_path:
             return Path(self.config.report_path)
@@ -587,6 +608,8 @@ class Cleaner:
             if not await self._recover_disabled():
                 return self.summary
             if not self._load_settings():
+                return self.summary
+            if not self._payment_schema_ready():
                 return self.summary
             try:
                 planned = await self._scan(started_at)
