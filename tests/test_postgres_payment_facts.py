@@ -6,9 +6,10 @@ SQLite не повторяет поведение PostgreSQL в главном �
 же правила выполняются на PG: цепочка и оплаты CloudPayments, проверка
 платёжных таблиц до перебора панели и отказ (fail closed) без таблиц CP.
 
-Нужна переменная RW_CLEANER_TEST_PG_URL (например
-postgresql+psycopg2://user:pass@127.0.0.1:5432/test) — только одноразовая
-тестовая БД: модуль создаёт схему rwc_<случайно> со всеми таблицами моделей
+Нужна переменная RW_CLEANER_TEST_PG_URL — только одноразовая тестовая БД
+(например контейнер `docker run --rm -p 127.0.0.1:55439:5432 ...` и
+postgresql+psycopg2://user:pass@127.0.0.1:55439/ykrtest), НИКОГДА не
+локальная дев-БД 127.0.0.1:5432 (эталон alembic autogenerate). Модуль создаёт схему rwc_<случайно> со всеми таблицами моделей
 common (search_path соединений) и удаляет её после себя. Без переменной
 модуль пропускается."""
 
@@ -26,12 +27,16 @@ from common.models.db import CP_PAYMENT_STATUS_PARTIALLY_REFUNDED
 from common.models.db import Base
 from common.models.db import CpPayment
 from common.models.db import CpRecurrentPayment
+from common.models.db import WataInvoice
+from common.models.db import WataTransaction
 from common.models.db import YkPayment
 from common.models.db import YkRecurrentPayment
 from rw_cleaner.cleanup import EXIT_AUTO_STOP
 from rw_cleaner.cleanup import EXIT_OK
 from rw_cleaner.cleanup import Cleaner
 from rw_cleaner.rules import TIER_ALL
+from rw_cleaner.rules import TIER_NEVER_CONNECTED
+from rw_cleaner.rules import TIER_NEVER_PAID
 from rw_cleaner.rules import load_db_facts
 from rw_cleaner.rules import payment_schema_problems
 from tests.helpers import NOW
@@ -269,3 +274,74 @@ def test_pg_run_keeps_bot_invoice_user(tmp_path, pg_sessions):
     assert "payer" in rwms.users
     report = {row["username"]: row for row in read_report(tmp_path / "report.csv")}
     assert report["payer"]["reason"] == "recent_bot_invoice"
+
+
+def _seed_refunded_payers(pg_sessions, rwms, connected):
+    """Три пользователя, чья единственная оплата полностью возвращена (по
+    шлюзу на каждого), и один никогда не плативший — все истекли >90 дней."""
+    panel = (
+        dict(first_connected=days_ago(160), online_at=days_ago(140), lifetime_traffic=1e9)
+        if connected
+        else {}
+    )
+    paid_at = days_ago(150)
+    wata = seed(pg_sessions, rwms, "wata_refunded", user_id=801, **panel)
+    yk = seed(pg_sessions, rwms, "yk_refunded", user_id=802, **panel)
+    cp = seed(pg_sessions, rwms, "cp_refunded", user_id=803, **panel)
+    seed(pg_sessions, rwms, "never_paid", user_id=804, **panel)
+    with pg_sessions() as s:
+        s.add(
+            WataInvoice(
+                user_id=wata, invoice_id="wi-1", amount=249, currency="RUB",
+                status="Paid", terminal_name="t", terminal_public_id="tp",
+                creation_time=paid_at, order_id="order-1",
+                expiration_datetime=paid_at + timedelta(days=1),
+            )
+        )
+        # payment/wata_refunds.py при полном возврате: Paid -> Refunded.
+        s.add(
+            WataTransaction(
+                transaction_id="wt-1", transaction_type="CardCrypto",
+                terminal_public_id="tp", transaction_status="Refunded",
+                terminal_name="t", amount=249, currency="RUB", order_id="order-1",
+                order_description="month", commission=0, payment_time=paid_at,
+            )
+        )
+        s.add(
+            YkPayment(
+                user_id=yk, amount=249, currency="RUB", status="refunded",
+                created_at=naive(paid_at), captured_at=naive(paid_at),
+                payment_id="yk-1", subscription_period="month", shop_id="shop-1",
+            )
+        )
+        s.commit()
+        add_cp_payment(s, cp, pid=1, status="Refunded", at=paid_at)
+        s.commit()
+
+
+@pytest.mark.parametrize(
+    "tier,connected",
+    [(TIER_NEVER_CONNECTED, False), (TIER_NEVER_PAID, True)],
+    ids=["never_connected", "never_paid"],
+)
+def test_pg_fully_refunded_payer_is_paid_for_narrow_tiers(
+    tmp_path, pg_sessions, tier, connected
+):
+    # Ревью CP, круг 7, R1: полностью вернувший деньги через WATA (строка
+    # wata_transactions в Refunded) — «платил», как вернувшие через ЮKassa и
+    # CloudPayments; в узких ступенях не удаляется. Удаляется только тот, кто
+    # не платил никогда.
+    rwms = FakeRwms()
+    _seed_refunded_payers(pg_sessions, rwms, connected)
+
+    summary = run_cleaner(make_config(tmp_path, execute=True, tier=tier), pg_sessions, rwms)
+
+    assert summary.exit_code == EXIT_OK
+    assert rwms.deleted == ["never_paid"]
+    for name in ("wata_refunded", "yk_refunded", "cp_refunded"):
+        assert name in rwms.users
+    report = {row["username"]: row for row in read_report(tmp_path / "report.csv")}
+    for name in ("wata_refunded", "yk_refunded", "cp_refunded"):
+        assert report[name]["reason"] == "tier_paid"
+        assert report[name]["ever_paid"] == "yes"
+    assert [a.username for a in archives(pg_sessions)] == ["never_paid"]
