@@ -35,7 +35,7 @@ case "$rc" in
   1) meaning="some candidates not processed / open_archive_mismatch / report or state write failed" ;;
   2) meaning="settings error" ;;
   3) meaning="another run is in progress" ;;
-  4) meaning="AUTO-STOP: orphan / candidate ratio or failure streak" ;;
+  4) meaning="AUTO-STOP: orphan / candidate ratio, failure streak or payment_schema_unreadable (payment tables unreadable: migration not applied?)" ;;
   5) meaning="panel scan incomplete, nothing deleted" ;;
   6) meaning="NEEDS A HUMAN: uncertain/pending records (see README)" ;;
   *) meaning="unexpected (docker / compose error?)" ;;

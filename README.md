@@ -54,8 +54,8 @@
    записи uncertain — код 6, перебор и отчёт всё равно делаются).
    **Проверка платёжных таблиц** (оба режима, в том числе dry-run): каждая
    таблица платёжных фактов (`yk_payments`, `wata_invoices`,
-   `wata_transactions`, `website_payment_attempts`, `cp_payments` и все
-   таблицы цепочек автоплатежей `common/autopay_chains.RECURRENT_CHAIN_MODELS`
+   `wata_transactions`, `website_payment_attempts`, `cp_payments`,
+   `event_logs` — счета бота, и все таблицы цепочек автоплатежей `common/autopay_chains.RECURRENT_CHAIN_MODELS`
    — `yk_recurrent_payments`, `cp_recurrent_payments`) читается `SELECT` всех
    колонок модели с `LIMIT 0`. Не читается хоть одна (миграция не применена —
    например, CloudPayments до `e07e3968ff54`) — платёжное состояние
@@ -323,13 +323,23 @@
 | нет записи в `user_blocks` | `user_blocked` |
 | нет запроса на удаление аккаунта в статусе `pending` или `completed` | `account_deletion_*` |
 | нет действующего оффера win-back (`winback_offers.valid_until` в будущем) | `winback_offer_active` |
-| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` (любой статус, по `created_at` или `captured_at`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts` | `recent_yk_payment`, `recent_cp_payment`, `recent_wata_invoice`, `recent_website_payment_attempt` |
+| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` (любой статус, по `created_at` или `captured_at`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts`, ни счёта из бота (`event_logs.event_type` с префиксом `create_invoice` по `timestamp`) | `recent_yk_payment`, `recent_cp_payment`, `recent_wata_invoice`, `recent_website_payment_attempt`, `recent_bot_invoice` |
 | нет цепочки автоплатежа ни в одной таблице цепочек (`yk_recurrent_payments`, `cp_recurrent_payments` — `common/autopay_chains.autopay_exists_clause`, выполняется в запросе без деградации: нет таблицы = ошибка, а не «цепочек нет») | `recurrent_payment_saved` |
 | нет активного временного бана (`temporary_squad_bans.restored_at IS NULL`) | `temporary_squad_ban_active` |
 | нет активного grace-доступа (`grace_access_grants.restored_at IS NULL`) | `grace_access_active` |
 | нет `free_tier_access.on_free = true` | `free_tier_on_free` |
 | ступень (`--tier`) — см. ниже | `tier_paid`, `tier_connected` |
 | ссылку и ключи панель примет обратно в `AddUser` (`panel_user_restorable`) | `not_restorable` |
+
+**Счёт из бота** (`recent_bot_invoice`): при нажатии тарифа бот пишет
+`event_logs.create_invoice_<slug>` (`create_invoice_one_month`,
+`create_invoice_intro99` и т. п.). У счёта CloudPayments из бота это
+единственный след до оплаты: строка `cp_payments` появляется только на
+уведомление Pay, `website_payment_attempts` пишет только сайт. Без этой
+проверки подписку человека, который прямо сейчас оплачивает счёт CP в боте,
+можно было удалить. Префикс сравнивается с экранированием (`_` в `LIKE` — не
+подстановочный символ); проверка — в общем блоке, то есть в обоих режимах, при
+отборе, при перечитывании перед архивом и под блокировкой `users`.
 
 `GRACE_DAYS` по умолчанию 90 и не может быть меньше 45: срок хранения всегда
 больше последнего шага win-back (день 30 + оффер 48 ч), чтобы не удалить
@@ -644,7 +654,8 @@ RWMS, `network_mode: host`). Это не демон: каждый запуск �
 ```
 
 `run.sh` передаёт аргументы в `main.py` как есть и печатает код выхода с
-расшифровкой. **`--execute` в `run.sh` заблокирован** (код 2, docker не
+расшифровкой (для кода 4 — в том числе `payment_schema_unreadable`: платёжные
+таблицы не читаются, миграция не применена). **`--execute` в `run.sh` заблокирован** (код 2, docker не
 вызывается), пока не разрешён явно:
 `RW_CLEANER_ALLOW_EXECUTE=yes ./run.sh --execute --max-deletions 5` — это
 второй замок поверх dry-run по умолчанию на время выкатки.
@@ -676,6 +687,15 @@ Cron не настроен: пока запуски ручные (dry-run → р
      `e07e3968ff54` (её применяет бот на старте). Без неё rw-cleaner
      останавливается до перебора панели с кодом 4
      (`payment_schema_unreadable`) — это ожидаемо, а не сбой.
+   - **Гейт CloudPayments: новый rw-cleaner (с этой веткой) выкатить сразу
+     после миграции и ДО первых оплат CP.** Старый образ (без
+     CloudPayments) не видит `cp_payments`, `cp_recurrent_payments` и счетов
+     CP из бота: плательщик CP для него «никогда не платил» (попадает в
+     ступени `never_*`), цепочка автоплатежа CP не защищает подписку, свежая
+     оплата CP — не «недавняя активность». **Как только есть хоть один
+     плательщик CP, старый образ с `--execute` не запускать** — в том числе
+     `.bak`-tar после `deploy.sh` (откат образа rw-cleaner — только dry-run).
+     Общий порядок — ниже, «Порядок выката CloudPayments».
    - Свежий бэкап основной БД (архив хранится в ней: потеря БД = потеря
      ссылок) и свежий успешный бэкап панели.
 1. **Dry-run на проде.** `python main.py --full-scan` (без `--execute` — БД
@@ -717,6 +737,24 @@ Cron не настроен: пока запуски ручные (dry-run → р
    `owner_tagged`; если владелец хочет разрешить удаление такой подписки —
    сначала снять тег в панели.
 
+### Порядок выката CloudPayments (общий для всех сервисов)
+
+1. Слить common → бот: миграция `e07e3968ff54` (`cp_payments`,
+   `cp_recurrent_payments`) применяется при старте бота; после неё бот
+   только вперёд.
+2. **Сразу после миграции и ДО первых оплат CP** — payment, yk-recurrent,
+   сайт, user-notify, rw-cleaner, ip-guard на новом common: старые версии
+   считают CP-плательщиков неплатившими.
+3. Секрет заказов одинаковый во всех 4 сервисах (сайт, бот, payment,
+   yk-recurrent); `CP_CHARGE_ENABLED=true`.
+4. Терминалы, «Сохранять принудительно», уведомления в ЛК CP → включение
+   вариантов оплаты CP.
+
+Откат: сначала убрать варианты CP и `CP_CHARGE_ENABLED=false`; бот после
+миграции не откатывается на образ без ревизии; старый yk-recurrent не видит
+флаги/awaiting CP. rw-cleaner: старый образ после первых оплат CP — только
+dry-run (см. гейт в предусловиях).
+
 Следить в логах за `AUTO-STOP`, `CRITICAL` (в том числе `DELETE UNCERTAIN`,
 `DISABLE UNCERTAIN`, `uncertain DELETE landed ... WITHOUT an open archive`,
 `RE-ENABLE FAILED`), `execution failed` и кодами выхода 1/3/4/5/6. Код 6 —
@@ -740,6 +778,12 @@ Cron не настроен: пока запуски ручные (dry-run → р
   действующий оффер блокирует удаление.
 - **Бот / сайт** при отсутствии подписки в панели предлагают продление;
   продление восстанавливает подписку из архива.
+- **Бот: события `create_invoice_*` в `event_logs` — контракт.** По ним
+  rw-cleaner видит неоплаченный счёт из бота (`recent_bot_invoice`, главное —
+  счёт CloudPayments, у которого до оплаты нет строк в платёжных таблицах).
+  Переименование события или отказ от записи при выставлении счёта молча
+  снимет эту защиту — менять только вместе с `BOT_INVOICE_EVENT_PREFIX`
+  (`rw_cleaner/rules.py`).
 - **Удаление аккаунта** (`account_deletion_requests`): pending/completed —
   подписка не трогается.
 - Окно гонки «пользователь оплатил ровно между перепроверкой и DeleteUser»
@@ -807,17 +851,22 @@ Cron не настроен: пока запуски ручные (dry-run → р
 гонка с продлением до блокировки, бан/grace, CloudPayments (оплата в любом
 статусе — «платил» для ступеней, недавняя оплата CP, цепочка CP блокирует
 удаление в обоих режимах и под блокировкой; нет таблиц CP — остановка до
-перебора, ничего не удалено и в dry-run), сбои и идемпотентность,
+перебора, ничего не удалено и в dry-run), счёт из бота (`event_logs`
+`create_invoice_*`, `tests/test_bot_invoice_activity.py`: блокирует удаление в
+обоих режимах и под блокировкой, старый счёт / другие события / чужой счёт / `_`
+как символ — не блокируют, нет `event_logs` — остановка до перебора), сбои и
+идемпотентность,
 блокировка запуска, автоостановка, dry-run без записей, отчёт и отсутствие секретов в
 логах. `tests/test_docker_scripts.py` — Docker-обвязка с фейковым `docker` в
 `PATH`: `run.sh` не вызывает docker с `--execute` без
-`RW_CLEANER_ALLOW_EXECUTE=yes`, передаёт аргументы и код выхода, отказывает без
-`.env`; `.dockerignore` не пускает в образ `.env`, тесты, логи и отчёты.
+`RW_CLEANER_ALLOW_EXECUTE=yes`, передаёт аргументы и код выхода (расшифровка
+кода 4 называет `payment_schema_unreadable`), отказывает без `.env`; `.dockerignore` не пускает в образ `.env`, тесты, логи и отчёты.
 
 `tests/test_postgres_payment_facts.py` выполняет платёжные запросы правил и
 проверку платёжных таблиц на настоящем PostgreSQL (отдельная схема на
 запуск, удаляется после): цепочка и оплаты CloudPayments, отсутствующие
-таблицы CP — остановка, а не «оплат нет». Без переменной пропускается:
+таблицы CP — остановка, а не «оплат нет», счёт из бота (в том числе строка с
+`timestamp` из `server_default now()`, как пишет бот) блокирует удаление. Без переменной пропускается:
 
 ```bash
 RW_CLEANER_TEST_PG_URL=postgresql+psycopg2://user:pass@127.0.0.1:5432/test \

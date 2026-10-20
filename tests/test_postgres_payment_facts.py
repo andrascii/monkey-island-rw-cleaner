@@ -15,6 +15,7 @@ common (search_path соединений) и удаляет её после се
 import asyncio
 import os
 import uuid
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -194,3 +195,77 @@ def test_pg_run_keeps_cp_chain_and_deletes_plain(tmp_path, pg_sessions):
     report = {row["username"]: row for row in read_report(tmp_path / "report.csv")}
     assert report["chain"]["reason"] == "recurrent_payment_saved"
     assert [a.username for a in archives(pg_sessions)] == ["plain"]
+
+
+def test_pg_recent_bot_invoice_blocks(pg_sessions):
+    # Счёт CloudPayments из бота до оплаты оставляет только event_logs
+    # create_invoice_<slug> (ревью CP, круг 1). Бот пишет строку без
+    # timestamp — его ставит server_default now(); проверяем и такую строку
+    # (при реальном «сейчас»), и явную метку времени.
+    from datetime import datetime
+    from datetime import timezone
+
+    from common.models.db import EventLog
+
+    real_now = datetime.now(timezone.utc)
+    with pg_sessions() as s:
+        fresh = add_user(s, "fresh", expire_at=days_ago(120))
+        old = add_user(s, "old", expire_at=days_ago(120))
+        other = add_user(s, "other", expire_at=days_ago(120))
+        s.add(
+            EventLog(
+                user_id=fresh.id,
+                event_type="create_invoice_one_month",
+                event_payload={"event_type": "create_invoice_one_month"},
+            )
+        )
+        s.add(
+            EventLog(
+                user_id=old.id,
+                event_type="create_invoice_one_month",
+                event_payload={},
+                timestamp=naive(real_now - timedelta(days=20)),
+            )
+        )
+        s.add(
+            EventLog(
+                user_id=other.id,
+                event_type="createXinvoice_one_month",
+                event_payload={},
+                timestamp=naive(real_now),
+            )
+        )
+        s.commit()
+        assert payment_schema_problems(s) == []
+        fresh_facts = load_db_facts(s, snap("fresh"), real_now, 14)
+        old_facts = load_db_facts(s, snap("old"), real_now, 14)
+        other_facts = load_db_facts(s, snap("other"), real_now, 14)
+    assert fresh_facts.recent_payment == "recent_bot_invoice"
+    assert old_facts.recent_payment is None
+    assert other_facts.recent_payment is None
+
+
+def test_pg_run_keeps_bot_invoice_user(tmp_path, pg_sessions):
+    from common.models.db import EventLog
+
+    rwms = FakeRwms()
+    uid = seed(pg_sessions, rwms, "payer", user_id=701)
+    seed(pg_sessions, rwms, "plain", user_id=702)
+    with pg_sessions() as s:
+        s.add(
+            EventLog(
+                user_id=uid,
+                event_type="create_invoice_one_month",
+                event_payload={},
+                timestamp=naive(NOW - timedelta(hours=2)),
+            )
+        )
+        s.commit()
+
+    summary = run_cleaner(make_config(tmp_path, execute=True, tier=TIER_ALL), pg_sessions, rwms)
+
+    assert summary.exit_code == EXIT_OK
+    assert rwms.deleted == ["plain"]
+    assert "payer" in rwms.users
+    report = {row["username"]: row for row in read_report(tmp_path / "report.csv")}
+    assert report["payer"]["reason"] == "recent_bot_invoice"

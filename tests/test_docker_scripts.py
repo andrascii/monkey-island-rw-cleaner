@@ -89,6 +89,17 @@ def test_exit_code_propagated(server_dir, rc):
     assert f"rw-cleaner exit code: {rc}" in result.stderr
 
 
+def test_exit_4_explains_payment_schema_unreadable(server_dir):
+    # Ревью CP, круг 1 (review-cp/runsh): код 4 бывает и до перебора панели —
+    # платёжные таблицы не читаются (миграция CloudPayments не применена).
+    # Расшифровка run.sh должна это называть, иначе оператор ищет сирот.
+    result, _ = run_sh(server_dir, "--full-scan", rc=4)
+    assert result.returncode == 4
+    line = next(l for l in result.stderr.splitlines() if "rw-cleaner exit code: 4" in l)
+    assert "AUTO-STOP" in line
+    assert "payment_schema_unreadable" in line
+
+
 def test_missing_env_refuses(server_dir):
     (server_dir[0] / ".env").unlink()
     result, docker_args = run_sh(server_dir, "--full-scan")
