@@ -889,14 +889,23 @@ class Cleaner:
             return True, "DISABLED_BLOCKED"
         if result == "kept_disabled_soft":
             # DISABLED и autopay_allow=false — так подписку отключает админ
-            # кнопкой «Отключить подписку» (без user_blocks). Чей это DISABLED
-            # — наш запоздавший или админский — не различить: решает человек.
-            # Запись не снимается сама и после карантина: оператор либо
-            # включает подписку (запись снимется), либо --clear-uncertain.
+            # кнопкой «Отключить подписку» (без user_blocks). Но autopay_allow
+            # =false ставят и /stopautopay, /set-trial-hour, отмена автоплатежа
+            # клиентом и удаление аккаунта на сайте, так что это может быть и
+            # наш запоздавший DISABLE у человека, просто отменившего
+            # автоплатёж. Отличить можно только по event_logs: админское
+            # отключение пишет autopay_stopped_by_admin с
+            # payload.action=subscription_disabled. Решает человек; запись не
+            # снимается сама и после карантина: оператор либо включает
+            # подписку (запись снимется), либо --clear-uncertain.
             logger.critical(
                 "uncertain DISABLE: subscription is DISABLED and autopay_allow is "
-                "false (admin soft disable?), NOT re-enabled; manual decision: "
-                "enable it in the panel or keep it and --clear-uncertain %s",
+                "false, NOT re-enabled; autopay_allow=false is also set by "
+                "/stopautopay and autopay cancellation, not only by admin soft "
+                "disable: check event_logs for autopay_stopped_by_admin with "
+                "payload.action=subscription_disabled (admin disable -> keep it "
+                "and --clear-uncertain), otherwise it is likely our late DISABLE "
+                "-> enable it in the panel; manual decision required %s",
                 self._uncertain_fields(record, observed_now=observed),
             )
             return False, "DISABLED_SOFT"

@@ -274,6 +274,10 @@ def test_late_disable_with_soft_admin_disable_is_left_for_operator(
     assert summary.uncertain_reenabled == 0 and summary.reenable_failed == 0
     assert summary.exit_code == EXIT_UNCERTAIN
     assert "manual decision" in caplog.text
+    # autopay_allow=false бывает и после простой отмены автоплатежа —
+    # CRITICAL подсказывает, по какому событию отличить админское отключение.
+    assert "autopay_stopped_by_admin" in caplog.text
+    assert "subscription_disabled" in caplog.text
     assert uncertain_entries(tmp_path)[0]["last_observed"] == "DISABLED_SOFT"
 
     # После карантина запись не снимается сама — ждёт оператора.
