@@ -250,6 +250,46 @@ def test_late_disable_with_admin_block_stays_disabled(tmp_path, session_factory)
     assert status_of(rwms, "idle") == "DISABLED"
 
 
+def test_late_disable_with_soft_admin_disable_is_left_for_operator(
+    tmp_path, session_factory, caplog
+):
+    # N36: DISABLE очистителя завис (uncertain), потом админ кнопкой
+    # «Отключить подписку» отключил подписку без user_blocks — бот при этом
+    # ставит autopay_allow=false. DISABLED + autopay_allow=false не включаем
+    # обратно: решение за человеком, запись uncertain не снимается сама.
+    rwms = FakeRwms()
+    ids = setup_idle(session_factory, rwms)
+    rwms.users["idle"].status = DISABLED
+    with session_factory() as s:
+        s.get(User, ids["idle"]).autopay_allow = False
+        s.commit()
+    put_record(tmp_path, "disable", "idle", ids["idle"])
+
+    with caplog.at_level(logging.WARNING):
+        _, summary = run(
+            free_config(tmp_path), session_factory, rwms, HookSleeps(), now=later(1)
+        )
+    assert rwms.update_calls == []
+    assert status_of(rwms, "idle") == "DISABLED"
+    assert summary.uncertain_reenabled == 0 and summary.reenable_failed == 0
+    assert summary.exit_code == EXIT_UNCERTAIN
+    assert "manual decision" in caplog.text
+    assert uncertain_entries(tmp_path)[0]["last_observed"] == "DISABLED_SOFT"
+
+    # После карантина запись не снимается сама — ждёт оператора.
+    _, after = run(free_config(tmp_path), session_factory, rwms, HookSleeps(), now=later(48))
+    assert after.uncertain_dropped == 0
+    assert after.exit_code == EXIT_UNCERTAIN
+    assert rwms.update_calls == [] and rwms.delete_calls == []
+    assert status_of(rwms, "idle") == "DISABLED"
+
+    # Оператор решил включить подписку сам — запись снимается.
+    rwms.users["idle"].status = proto.UserStatus.ACTIVE
+    _, healed = run(free_config(tmp_path), session_factory, rwms, HookSleeps(), now=later(49))
+    assert healed.uncertain_dropped == 1
+    assert uncertain_entries(tmp_path) == []
+
+
 def test_late_disable_reenable_failure_keeps_record_past_quarantine(
     tmp_path, session_factory
 ):

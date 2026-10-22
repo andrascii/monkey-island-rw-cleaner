@@ -475,6 +475,28 @@ def test_hard_crash_is_recovered_by_the_next_run(tmp_path, session_factory, capl
     assert summary.exit_code == EXIT_OK
 
 
+def test_recovery_reenables_even_with_autopay_disallowed(tmp_path, session_factory):
+    # autopay_allow=false (например, после /stopautopay) — признак мягкого
+    # отключения учитывается только для запоздавшего uncertain DISABLE.
+    # Подписку, которую этот инструмент сам отключил в фазе 1, включаем
+    # обратно всегда (кроме user_blocks).
+    rwms = FakeRwms()
+    ids = setup_idle(session_factory, rwms)
+    rwms.users["idle"].status = DISABLED
+    with session_factory() as s:
+        s.get(User, ids["idle"]).autopay_allow = False
+        s.commit()
+    DisabledState(state_file(tmp_path)).add(
+        DisabledEntry("uuid-idle", "idle", ids["idle"], "x")
+    )
+
+    _, summary = run(make_config(tmp_path, execute=True), session_factory, rwms)
+
+    assert summary.reenabled == 1
+    assert status_of(rwms, "idle") == "ACTIVE"
+    assert state_entries(tmp_path) == []
+
+
 def test_recovery_failure_stops_the_run(tmp_path, session_factory):
     rwms = FakeRwms()
     ids = setup_idle(session_factory, rwms)

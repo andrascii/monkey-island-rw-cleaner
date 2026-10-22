@@ -178,9 +178,18 @@ PANEL_STATUS_ACTIVE = "ACTIVE"
 # Итоги обратного включения, после которых запись убирается из файла
 # состояния: включили; подписки нет; под этим username уже другая подписка;
 # статус уже не DISABLED (включил кто-то другой — платёж, админ); админская
-# блокировка (user_blocks) — статусом теперь владеет она.
+# блокировка (user_blocks) — статусом теперь владеет она; оставлено DISABLED
+# при autopay_allow=false (только запоздавший uncertain DISABLE — дальше его
+# ведёт запись uncertain до ручного решения).
 REENABLE_RESOLVED = frozenset(
-    {"reenabled", "gone", "panel_uuid_changed", "not_disabled", "kept_disabled_blocked"}
+    {
+        "reenabled",
+        "gone",
+        "panel_uuid_changed",
+        "not_disabled",
+        "kept_disabled_blocked",
+        "kept_disabled_soft",
+    }
 )
 
 # restored_by архива, закрытого после прерванного (до DeleteUser) удаления.
@@ -348,7 +357,7 @@ def lock_user_query(user_id: int):
     NOWAIT: если строку держит другая транзакция, ждать не будем —
     состояние пользователя меняется прямо сейчас, кандидат пропускается."""
     return (
-        select(User.id, User.username)
+        select(User.id, User.username, User.autopay_allow)
         .where(User.id == user_id)
         .with_for_update(nowait=True)
     )
@@ -838,7 +847,9 @@ class Cleaner:
     ) -> tuple[bool, str]:
         """Неопределённый DISABLE. Панель показывает DISABLED — запоздавший
         запрос дошёл: включаем обратно под блокировкой users (если нет
-        user_blocks — как при любом обратном включении). Новых удалений в
+        user_blocks — как при любом обратном включении — и autopay_allow не
+        false: иначе это может быть ручное отключение админом, решает
+        человек, запись не снимается). Новых удалений в
         этом запуске нет (записи uncertain их запрещают), так что подписка
         точно не из тех, что вот-вот удаляются. ACTIVE (и любой другой
         статус, кроме DISABLED) — запись остаётся до конца карантина: ACTIVE
@@ -854,7 +865,8 @@ class Cleaner:
             )
             return True, observed
         logger.critical(
-            "uncertain DISABLE landed late: subscription is DISABLED, re-enabling %s",
+            "uncertain DISABLE landed late: subscription is DISABLED, re-enabling "
+            "unless an admin disabled it %s",
             self._uncertain_fields(record, observed_now=observed),
         )
         entry = DisabledEntry(
@@ -863,7 +875,9 @@ class Cleaner:
             user_id=record.user_id,
             disabled_at=record.started_at,
         )
-        resolved = await self._reenable(entry, cause="uncertain_disable_late")
+        resolved = await self._reenable(
+            entry, cause="uncertain_disable_late", keep_soft_disabled=True
+        )
         result = self._last_reenable_result
         if not resolved:
             return False, observed
@@ -873,6 +887,19 @@ class Cleaner:
         if result == "kept_disabled_blocked":
             # Статусом владеет админская блокировка (user_blocks).
             return True, "DISABLED_BLOCKED"
+        if result == "kept_disabled_soft":
+            # DISABLED и autopay_allow=false — так подписку отключает админ
+            # кнопкой «Отключить подписку» (без user_blocks). Чей это DISABLED
+            # — наш запоздавший или админский — не различить: решает человек.
+            # Запись не снимается сама и после карантина: оператор либо
+            # включает подписку (запись снимется), либо --clear-uncertain.
+            logger.critical(
+                "uncertain DISABLE: subscription is DISABLED and autopay_allow is "
+                "false (admin soft disable?), NOT re-enabled; manual decision: "
+                "enable it in the panel or keep it and --clear-uncertain %s",
+                self._uncertain_fields(record, observed_now=observed),
+            )
+            return False, "DISABLED_SOFT"
         return True, observed
 
     def _recheck_uncertain_delete(
@@ -1475,7 +1502,9 @@ class Cleaner:
                 kv(panel_uuid=uuid, error=type(e).__name__),
             )
 
-    async def _reenable(self, entry: DisabledEntry, *, cause: str) -> bool:
+    async def _reenable(
+        self, entry: DisabledEntry, *, cause: str, keep_soft_disabled: bool = False
+    ) -> bool:
         """Включить обратно подписку, которую отключил этот инструмент. Под
         блокировкой users: строгое перечитывание панели; включается, только
         если это та же подписка, она всё ещё DISABLED и у пользователя нет
@@ -1488,7 +1517,9 @@ class Cleaner:
         отключает и не удаляет (подписка остаётся рабочей), поэтому отдельной
         записи pending у обратного включения нет; остаточный риск — снять
         DISABLED админской блокировки, поставленной между запросом и его
-        доставкой, — тот же, что и без падения."""
+        доставкой, — тот же, что и без падения. keep_soft_disabled (только
+        для запоздавшего uncertain DISABLE): при autopay_allow=false подписка
+        остаётся DISABLED (kept_disabled_soft) — так её отключает админ."""
         result = "error"
         for attempt in range(REENABLE_LOCK_ATTEMPTS):
             retry = False
@@ -1509,7 +1540,9 @@ class Cleaner:
                     locked = None
                 else:
                     try:
-                        result = await self._reenable_locked(session, entry, locked)
+                        result = await self._reenable_locked(
+                            session, entry, locked, keep_soft_disabled
+                        )
                         session.commit()
                     except Exception as e:  # noqa: BLE001
                         session.rollback()
@@ -1548,12 +1581,16 @@ class Cleaner:
         elif result == "kept_disabled_blocked":
             self.summary.kept_disabled_blocked += 1
             logger.warning("left DISABLED: admin block (user_blocks) %s", fields)
+        elif result == "kept_disabled_soft":
+            logger.warning("left DISABLED: autopay_allow is false %s", fields)
         else:
             logger.warning("re-enable not needed %s", fields)
         self._state_remove(entry.panel_uuid)
         return True
 
-    async def _reenable_locked(self, session, entry: DisabledEntry, locked) -> str:
+    async def _reenable_locked(
+        self, session, entry: DisabledEntry, locked, keep_soft_disabled: bool
+    ) -> str:
         if locked is None or locked.username != entry.username:
             return "user_row_changed"
         try:
@@ -1573,6 +1610,8 @@ class Cleaner:
         ).scalar()
         if blocked:
             return "kept_disabled_blocked"
+        if keep_soft_disabled and locked.autopay_allow is False:
+            return "kept_disabled_soft"
         try:
             response = await self._rwms.update_user(
                 proto.UpdateUserRequest(
