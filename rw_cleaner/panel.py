@@ -36,6 +36,9 @@ class PanelSnapshot:
     lifetime_traffic_bytes: float = 0.0
     # Трафик текущего периода и последнее открытие ссылки подписки клиентом —
     # только для сравнения «до/после» в двухфазном удалении (free_inactive).
+    # sub_last_opened_at RWMS сейчас не заполняет (панель 3.x его не отдаёт):
+    # всегда None и на решение не влияет; оставлено в отпечатке, чтобы
+    # защита заработала сама, если RWMS начнёт его заполнять.
     used_traffic_bytes: float = 0.0
     sub_last_opened_at: Optional[datetime] = None
     traffic_limit_bytes: Optional[int] = None

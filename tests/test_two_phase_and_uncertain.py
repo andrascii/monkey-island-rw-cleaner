@@ -165,6 +165,8 @@ def test_free_dry_run_never_disables(tmp_path, engine, session_factory):
     ["online_at", "sub_last_opened_at", "used_traffic", "lifetime_traffic"],
 )
 def test_activity_during_settle_reenables_and_skips(tmp_path, session_factory, change):
+    # sub_last_opened_at RWMS сейчас не заполняет (панель 3.x): этот случай
+    # проверяет, что поле, если появится, сразу отменяет удаление.
     rwms = FakeRwms()
     setup_idle(session_factory, rwms)
 
