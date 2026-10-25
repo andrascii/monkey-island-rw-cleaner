@@ -158,6 +158,31 @@ def test_pg_cp_facts(pg_sessions):
     assert clean_facts.recent_payment is None
 
 
+def test_pg_paw_facts(pg_sessions):
+    """PayAnyWay на настоящем PostgreSQL: FK mnt_id на paw_accounts, цепочки
+    в трёх таблицах — EXISTS без дублей, оплата в любом статусе — «платил»."""
+    from tests.test_payanyway import add_paw_chain
+    from tests.test_payanyway import add_paw_payment
+
+    with pg_sessions() as s:
+        chain = add_user(s, "pawchain", expire_at=days_ago(120))
+        payer = add_user(s, "pawpayer", expire_at=days_ago(120))
+        add_user(s, "pawclean", expire_at=days_ago(120))
+        add_paw_chain(s, chain.id, cid=1)
+        add_cp_chain(s, chain.id, cid=1)
+        add_paw_payment(s, payer.id, pid=1, status="Refunded", at=days_ago(200))
+        add_paw_payment(s, payer.id, pid=2, at=days_ago(2))
+        s.commit()
+        chain_facts = load_db_facts(s, snap("pawchain"), NOW, 14)
+        payer_facts = load_db_facts(s, snap("pawpayer"), NOW, 14)
+        clean_facts = load_db_facts(s, snap("pawclean"), NOW, 14)
+        assert payment_schema_problems(s) == []
+    assert chain_facts.has_recurrent and not chain_facts.ever_paid
+    assert payer_facts.ever_paid and payer_facts.last_payment_at == days_ago(2)
+    assert payer_facts.recent_payment == "recent_paw_payment"
+    assert not clean_facts.has_recurrent and not clean_facts.ever_paid
+
+
 def test_pg_missing_cp_tables_are_ambiguous(pg_engine, pg_sessions):
     with pg_sessions() as s:
         add_user(s, "u1", expire_at=days_ago(120))

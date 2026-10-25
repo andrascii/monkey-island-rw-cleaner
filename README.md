@@ -55,8 +55,8 @@
    **Проверка платёжных таблиц** (оба режима, в том числе dry-run): каждая
    таблица платёжных фактов (`yk_payments`, `wata_invoices`,
    `wata_transactions`, `website_payment_attempts`, `cp_payments`,
-   `event_logs` — счета бота, и все таблицы цепочек автоплатежей `common/autopay_chains.RECURRENT_CHAIN_MODELS`
-   — `yk_recurrent_payments`, `cp_recurrent_payments`) читается `SELECT` всех
+   `paw_payments`, `event_logs` — счета бота, и все таблицы цепочек автоплатежей `common/autopay_chains.RECURRENT_CHAIN_MODELS`
+   — `yk_recurrent_payments`, `cp_recurrent_payments`, `paw_recurrent_payments`) читается `SELECT` всех
    колонок модели с `LIMIT 0`. Не читается хоть одна (миграция не применена —
    например, CloudPayments до `e07e3968ff54`) — платёжное состояние
    неоднозначно: «оплат/цепочек CP нет» нельзя отличить от «таблицы нет».
@@ -323,8 +323,8 @@
 | нет записи в `user_blocks` | `user_blocked` |
 | нет запроса на удаление аккаунта в статусе `pending` или `completed` | `account_deletion_*` |
 | нет действующего оффера win-back (`winback_offers.valid_until` в будущем) | `winback_offer_active` |
-| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` (любой статус, по `created_at` или `captured_at`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts`, ни счёта из бота (`event_logs.event_type` с префиксом `create_invoice` по `timestamp`) | `recent_yk_payment`, `recent_cp_payment`, `recent_wata_invoice`, `recent_website_payment_attempt`, `recent_bot_invoice` |
-| нет цепочки автоплатежа ни в одной таблице цепочек (`yk_recurrent_payments`, `cp_recurrent_payments` — `common/autopay_chains.autopay_exists_clause`, выполняется в запросе без деградации: нет таблицы = ошибка, а не «цепочек нет») | `recurrent_payment_saved` |
+| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` и `paw_payments` (любой статус, по `created_at` или `captured_at`; причины `recent_cp_payment` / `recent_paw_payment`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts`, ни счёта из бота (`event_logs.event_type` с префиксом `create_invoice` по `timestamp`) | `recent_yk_payment`, `recent_cp_payment`, `recent_wata_invoice`, `recent_website_payment_attempt`, `recent_bot_invoice` |
+| нет цепочки автоплатежа ни в одной таблице цепочек (`yk_recurrent_payments`, `cp_recurrent_payments`, `paw_recurrent_payments` — `common/autopay_chains.autopay_exists_clause`, выполняется в запросе без деградации: нет таблицы = ошибка, а не «цепочек нет») | `recurrent_payment_saved` |
 | нет активного временного бана (`temporary_squad_bans.restored_at IS NULL`) | `temporary_squad_ban_active` |
 | нет активного grace-доступа (`grace_access_grants.restored_at IS NULL`) | `grace_access_active` |
 | нет `free_tier_access.on_free = true` | `free_tier_on_free` |
@@ -362,10 +362,11 @@
   `first_connected` и `online_at`, трафик за всё время 0, и ни одного
   успешного платежа;
 - `never_paid`: подключался, но ни одного успешного платежа
-  (`yk_payments` succeeded/refunded, `cp_payments` в любом статусе —
-  `Completed`/`Refunded`/`PartiallyRefunded`, или транзакция WATA
+  (`yk_payments` succeeded/refunded, `cp_payments` или `paw_payments`
+  (PayAnyWay) в любом статусе — `Completed`/`Refunded`/`PartiallyRefunded`,
+  или транзакция WATA
   `Paid`/`Refunded`/`PartiallyRefunded` — при полном возврате payment переводит
-  её из `Paid` в `Refunded`); возвраты всех трёх шлюзов считаются оплатой —
+  её из `Paid` в `Refunded`); возвраты всех шлюзов считаются оплатой —
   консервативнее сегментов common, где «платил» — только
   `succeeded`/`Completed`/`Paid`;
 - `all`: все, кто прошёл правила выше (в том числе когда-то платившие).
@@ -689,6 +690,12 @@ Cron не настроен: пока запуски ручные (dry-run → р
      `e07e3968ff54` (её применяет бот на старте). Без неё rw-cleaner
      останавливается до перебора панели с кодом 4
      (`payment_schema_unreadable`) — это ожидаемо, а не сбой.
+   - С common, где есть PayAnyWay (`paw_accounts`, `paw_payments`,
+     `paw_recurrent_payments`), — применена миграция PayAnyWay (её тоже
+     применяет бот). Без неё — та же остановка с кодом 4. Новая платёжная
+     таблица common, не разобранная в `rules.py`, роняет тест
+     `tests/test_rules.py::test_every_payment_table_is_a_fact`; разбор
+     PayAnyWay — `tests/test_payanyway.py` и `test_pg_paw_facts`.
    - **Состояние на 2026-10-25:** CloudPayments уже принимает платежи, а
      rw-cleaner в проде ещё ни разу не развёртывался (на `mi.fornex.app` нет ни
      каталога, ни контейнера, ни крона), поэтому ничего не удалял. Первый деплой —

@@ -31,8 +31,12 @@ from common.models.db import CP_PAYMENT_STATUS_COMPLETED
 from common.models.db import CP_PAYMENT_STATUS_PARTIALLY_REFUNDED
 from common.models.db import CP_PAYMENT_STATUS_REFUNDED
 from common.models.db import AccountDeletionRequest
+from common.models.db import PAW_PAYMENT_STATUS_COMPLETED
+from common.models.db import PAW_PAYMENT_STATUS_PARTIALLY_REFUNDED
+from common.models.db import PAW_PAYMENT_STATUS_REFUNDED
 from common.models.db import CpPayment
 from common.models.db import EventLog
+from common.models.db import PawPayment
 from common.models.db import FreeTierAccess
 from common.models.db import User
 from common.models.db import UserBlock
@@ -73,6 +77,14 @@ PAID_CP_STATUSES = (
     CP_PAYMENT_STATUS_REFUNDED,
     CP_PAYMENT_STATUS_PARTIALLY_REFUNDED,
 )
+# PayAnyWay — как CloudPayments: строка paw_payments появляется только на
+# успешную оплату (уведомление Pay URL), возврат меняет её статус; для
+# rw-cleaner «платил» — любой статус.
+PAID_PAW_STATUSES = (
+    PAW_PAYMENT_STATUS_COMPLETED,
+    PAW_PAYMENT_STATUS_REFUNDED,
+    PAW_PAYMENT_STATUS_PARTIALLY_REFUNDED,
+)
 
 # Счёт из бота: при нажатии тарифа бот пишет event_logs.create_invoice_<slug>
 # (handlers/tariffs.py). У CloudPayments это ЕДИНСТВЕННЫЙ след неоплаченного
@@ -99,6 +111,7 @@ PAYMENT_FACT_MODELS = (
     WataTransaction,
     WebsitePaymentAttempt,
     CpPayment,
+    PawPayment,
     EventLog,
     *RECURRENT_CHAIN_MODELS,
 )
@@ -233,6 +246,15 @@ def recent_payment_activity(
         return "recent_cp_payment"
     if _exists(
         session,
+        PawPayment.user_id == user_id,
+        or_(
+            PawPayment.created_at >= naive_utc(cutoff),
+            PawPayment.captured_at >= naive_utc(cutoff),
+        ),
+    ):
+        return "recent_paw_payment"
+    if _exists(
+        session,
         WataInvoice.user_id == user_id,
         or_(
             WataInvoice.creation_time >= cutoff,
@@ -273,7 +295,12 @@ def last_successful_payment(session: Session, user_id: int) -> Optional[datetime
         .where(CpPayment.user_id == user_id)
         .where(CpPayment.status.in_(PAID_CP_STATUSES))
     ).scalar()
-    dates = [as_utc(v) for v in (last_yk, last_wata, last_cp) if v is not None]
+    last_paw = session.execute(
+        select(func.max(func.coalesce(PawPayment.captured_at, PawPayment.created_at)))
+        .where(PawPayment.user_id == user_id)
+        .where(PawPayment.status.in_(PAID_PAW_STATUSES))
+    ).scalar()
+    dates = [as_utc(v) for v in (last_yk, last_wata, last_cp, last_paw) if v is not None]
     return max(dates) if dates else None
 
 
@@ -316,7 +343,7 @@ def load_db_facts(
             WinbackOffer.valid_until > naive_utc(now),
         ),
         recent_payment=recent_payment_activity(session, user_id, now, recent_days),
-        # Цепочка автоплатежа в ЛЮБОЙ таблице (ЮKassa, CloudPayments):
+        # Цепочка автоплатежа в ЛЮБОЙ таблице (ЮKassa, CloudPayments, PayAnyWay):
         # autopay_exists_clause выполняется в этом запросе без деградации —
         # нет таблицы цепочек = ошибка БД (удаления не будет), а не «цепочек
         # нет», как у common.autopay_chains.user_has_autopay.
