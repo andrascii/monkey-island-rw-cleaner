@@ -323,7 +323,7 @@
 | нет записи в `user_blocks` | `user_blocked` |
 | нет запроса на удаление аккаунта в статусе `pending` или `completed` | `account_deletion_*` |
 | нет действующего оффера win-back (`winback_offers.valid_until` в будущем) | `winback_offer_active` |
-| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` и `paw_payments` (любой статус, по `created_at` или `captured_at`; причины `recent_cp_payment` / `recent_paw_payment`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts`, ни счёта из бота (`event_logs.event_type` с префиксом `create_invoice` по `timestamp`) | `recent_yk_payment`, `recent_cp_payment`, `recent_wata_invoice`, `recent_website_payment_attempt`, `recent_bot_invoice` |
+| за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` и `paw_payments` (любой статус, по `created_at` или `captured_at`; причины `recent_cp_payment` / `recent_paw_payment`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts`, ни счёта из бота (`event_logs.event_type` с префиксом `create_invoice` по `timestamp`) | `recent_yk_payment`, `recent_cp_payment`, `recent_paw_payment`, `recent_wata_invoice`, `recent_website_payment_attempt`, `recent_bot_invoice` |
 | нет цепочки автоплатежа ни в одной таблице цепочек (`yk_recurrent_payments`, `cp_recurrent_payments`, `paw_recurrent_payments` — `common/autopay_chains.autopay_exists_clause`, выполняется в запросе без деградации: нет таблицы = ошибка, а не «цепочек нет») | `recurrent_payment_saved` |
 | нет активного временного бана (`temporary_squad_bans.restored_at IS NULL`) | `temporary_squad_ban_active` |
 | нет активного grace-доступа (`grace_access_grants.restored_at IS NULL`) | `grace_access_active` |
@@ -695,7 +695,10 @@ Cron не настроен: пока запуски ручные (dry-run → р
      применяет бот). Без неё — та же остановка с кодом 4. Новая платёжная
      таблица common, не разобранная в `rules.py`, роняет тест
      `tests/test_rules.py::test_every_payment_table_is_a_fact`; разбор
-     PayAnyWay — `tests/test_payanyway.py` и `test_pg_paw_facts`.
+     PayAnyWay — `tests/test_payanyway.py`, `test_pg_paw_facts`,
+     `test_pg_missing_paw_tables_are_ambiguous` и
+     `test_pg_run_stops_without_paw_tables` (PostgreSQL: без таблиц PayAnyWay —
+     остановка с кодом 4 и в dry-run, и с `--execute`).
    - **Состояние на 2026-10-25:** CloudPayments уже принимает платежи, а
      rw-cleaner в проде ещё ни разу не развёртывался (на `mi.fornex.app` нет ни
      каталога, ни контейнера, ни крона), поэтому ничего не удалял. Первый деплой —
@@ -709,6 +712,16 @@ Cron не настроен: пока запуски ручные (dry-run → р
      плательщик CP, старый образ с `--execute` не запускать** — в том числе
      `.bak`-tar после `deploy.sh` (откат образа rw-cleaner — только dry-run).
      Общий порядок — ниже, «Порядок выката CloudPayments».
+   - **Гейт PayAnyWay — то же правило:** образ rw-cleaner на новом common
+     (ветка `payanyway`, с `paw_payments` / `paw_recurrent_payments` в
+     `rules.py`) выкатить после миграции PayAnyWay и ДО первой оплаты PayAnyWay
+     (до включения вариантов `paw` в админке сайта и боте). Образ с main (только
+     CloudPayments) не видит `paw_payments`: плательщик PayAnyWay для него
+     «никогда не платил» (ступени `never_connected` / `never_paid`), свежая
+     оплата PayAnyWay — не «недавняя активность», и подписка, истёкшая больше
+     `GRACE_DAYS` назад, ушла бы в архив и удаление. **Как только есть хоть
+     один плательщик PayAnyWay, образ без PayAnyWay с `--execute` не запускать**
+     — ни первым деплоем, ни `.bak`-откатом (откат — только dry-run).
    - Свежий бэкап основной БД (архив хранится в ней: потеря БД = потеря
      ссылок) и свежий успешный бэкап панели.
 1. **Dry-run на проде.** `python main.py --full-scan` (без `--execute` — БД

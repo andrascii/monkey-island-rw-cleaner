@@ -195,6 +195,43 @@ def test_pg_missing_cp_tables_are_ambiguous(pg_engine, pg_sessions):
             load_db_facts(s, snap("u1"), NOW, 14)
 
 
+def drop_paw_tables(engine):
+    from common.models.db import PawAccount
+    from common.models.db import PawPayment
+    from common.models.db import PawRecurrentPayment
+
+    PawRecurrentPayment.__table__.drop(engine)
+    PawPayment.__table__.drop(engine)
+    PawAccount.__table__.drop(engine)
+
+
+def test_pg_missing_paw_tables_are_ambiguous(pg_engine, pg_sessions):
+    # Миграция PayAnyWay не применена, а образ уже новый: «оплат PayAnyWay
+    # нет» сказать нельзя — проверка схемы называет таблицы, факты не читаются.
+    with pg_sessions() as s:
+        add_user(s, "u1", expire_at=days_ago(120))
+        s.commit()
+    drop_paw_tables(pg_engine)
+    with pg_sessions() as s:
+        assert payment_schema_problems(s) == ["paw_payments", "paw_recurrent_payments"]
+        with pytest.raises(Exception, match="paw_"):
+            load_db_facts(s, snap("u1"), NOW, 14)
+
+
+@pytest.mark.parametrize("execute", [False, True], ids=["dry_run", "execute"])
+def test_pg_run_stops_without_paw_tables(tmp_path, pg_engine, pg_sessions, execute):
+    rwms = FakeRwms()
+    seed(pg_sessions, rwms, "u1")
+    drop_paw_tables(pg_engine)
+
+    summary = run_cleaner(make_config(tmp_path, execute=execute), pg_sessions, rwms)
+
+    assert summary.exit_code == EXIT_AUTO_STOP
+    assert summary.stop_reason == "payment_schema_unreadable"
+    assert rwms.stream_calls == [] and rwms.delete_calls == []
+    assert "u1" in rwms.users
+
+
 @pytest.mark.parametrize("execute", [False, True], ids=["dry_run", "execute"])
 def test_pg_run_stops_without_cp_tables(tmp_path, pg_engine, pg_sessions, execute):
     rwms = FakeRwms()
