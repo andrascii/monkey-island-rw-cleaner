@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from common import paw_orders
 from common.account_deletion import REQUEST_STATUS_COMPLETED
 from common.account_deletion import REQUEST_STATUS_PENDING
 from common.autopay_chains import RECURRENT_CHAIN_MODELS
@@ -268,6 +269,8 @@ def recent_payment_activity(
         WebsitePaymentAttempt.created_at >= naive_utc(cutoff),
     ):
         return "recent_website_payment_attempt"
+    if paw_money_moved_unrecorded(session, user_id):
+        return "paw_money_moved_unrecorded"
     if _exists(
         session,
         EventLog.user_id == user_id,
@@ -276,6 +279,24 @@ def recent_payment_activity(
     ):
         return "recent_bot_invoice"
     return None
+
+
+def paw_money_moved_unrecorded(session: Session, user_id: int) -> bool:
+    """Есть попытка PayAnyWay с отметкой сайта «деньги у МОНЕТЫ»
+    (common paw_orders.MONEY_MOVED_KEY), а оплаты по её номеру заказа в
+    paw_payments нет: деньги списаны, Pay потерян — состояние не однозначно,
+    подписку не трогаем, сколько бы времени ни прошло."""
+    rows = session.execute(
+        select(WebsitePaymentAttempt.provider_reference, WebsitePaymentAttempt.request_payload)
+        .where(WebsitePaymentAttempt.user_id == user_id)
+        .where(WebsitePaymentAttempt.gateway == "paw")
+    ).all()
+    for reference, payload in rows:
+        if paw_orders.money_moved_at(payload) is None:
+            continue
+        if not reference or not _exists(session, PawPayment.transaction_id == reference):
+            return True
+    return False
 
 
 def last_successful_payment(session: Session, user_id: int) -> Optional[datetime]:

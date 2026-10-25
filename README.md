@@ -324,6 +324,7 @@
 | нет запроса на удаление аккаунта в статусе `pending` или `completed` | `account_deletion_*` |
 | нет действующего оффера win-back (`winback_offers.valid_until` в будущем) | `winback_offer_active` |
 | за `RECENT_PAYMENT_DAYS` нет ни `yk_payments` (любой статус), ни `cp_payments` и `paw_payments` (любой статус, по `created_at` или `captured_at`; причины `recent_cp_payment` / `recent_paw_payment`), ни `wata_invoices` (созданных или ещё не истёкших), ни `website_payment_attempts`, ни счёта из бота (`event_logs.event_type` с префиксом `create_invoice` по `timestamp`) | `recent_yk_payment`, `recent_cp_payment`, `recent_paw_payment`, `recent_wata_invoice`, `recent_website_payment_attempt`, `recent_bot_invoice` |
+| нет попытки PayAnyWay с отметкой сайта «деньги у МОНЕТЫ» (`request_payload.money_moved_at`, common `paw_orders`) без строки `paw_payments` по её номеру заказа — любого возраста: деньги списаны, Pay потерян, состояние не однозначно | `paw_money_moved_unrecorded` |
 | нет цепочки автоплатежа ни в одной таблице цепочек (`yk_recurrent_payments`, `cp_recurrent_payments`, `paw_recurrent_payments` — `common/autopay_chains.autopay_exists_clause`, выполняется в запросе без деградации: нет таблицы = ошибка, а не «цепочек нет») | `recurrent_payment_saved` |
 | нет активного временного бана (`temporary_squad_bans.restored_at IS NULL`) | `temporary_squad_ban_active` |
 | нет активного grace-доступа (`grace_access_grants.restored_at IS NULL`) | `grace_access_active` |

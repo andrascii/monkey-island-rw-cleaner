@@ -205,3 +205,39 @@ def test_old_paw_payer_is_kept_in_never_paid_tier(tmp_path, session_factory):
 
     assert rwms.delete_calls == []
     assert read_report(tmp_path / "report.csv")[0]["reason"] == "tier_paid"
+
+
+def _add_paw_attempt(s, user_id, ref, *, marked, at):
+    from common.models.db import WebsitePaymentAttempt
+
+    payload = {"transaction_id": ref}
+    if marked:
+        payload["money_moved_at"] = 1_700_000_000
+    s.add(WebsitePaymentAttempt(
+        id=f"a-{ref}", user_id=user_id, fingerprint="f", gateway="paw", tariff_id="month",
+        state="ready", request_payload=payload, status_token_hash=f"h-{ref}",
+        status_url="https://x", provider_reference=ref, created_at=naive(at), attempts=0,
+    ))
+
+
+def test_money_seen_at_payanyway_without_a_payment_blocks_deletion_forever(session_factory):
+    # Деньги видели у МОНЕТЫ (отметка сайта), Pay потерян: давно, а подписку
+    # всё равно не трогаем.
+    with session_factory() as s:
+        u = add_user(s, "pawlost", expire_at=days_ago(400))
+        _add_paw_attempt(s, u.id, "mi-paw-site-lost", marked=True, at=days_ago(300))
+        v = add_user(s, "pawplain", expire_at=days_ago(400))
+        _add_paw_attempt(s, v.id, "mi-paw-site-plain", marked=False, at=days_ago(300))
+        w = add_user(s, "pawdone", expire_at=days_ago(400))
+        _add_paw_attempt(s, w.id, "mi-paw-site-done", marked=True, at=days_ago(300))
+        _account(s)
+        s.flush()
+        s.add(PawPayment(
+            id=77, user_id=w.id, operation_id=77, transaction_id="mi-paw-site-done", mnt_id="86633580",
+            amount=249, status=PAW_PAYMENT_STATUS_COMPLETED, subscription_period="month",
+            created_at=naive(days_ago(300)), captured_at=naive(days_ago(300)),
+        ))
+        s.commit()
+        assert load_db_facts(s, snap("pawlost"), NOW, 14).recent_payment == "paw_money_moved_unrecorded"
+        assert load_db_facts(s, snap("pawplain"), NOW, 14).recent_payment is None
+        assert load_db_facts(s, snap("pawdone"), NOW, 14).recent_payment is None
