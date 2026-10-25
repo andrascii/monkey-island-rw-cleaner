@@ -88,20 +88,19 @@ BOT_INVOICE_EVENT_PREFIX = "create_invoice"
 # платёжное состояние НЕОДНОЗНАЧНО: «нет строк» нельзя отличить от «нет
 # таблицы», поэтому запуск останавливается до перебора панели
 # (payment_schema_problems), а не считает «оплат CP нет». Цепочки автоплатежей
-# — из common/autopay_chains.RECURRENT_CHAIN_MODELS: новый шлюз попадает сюда
-# сам.
-PAYMENT_FACT_MODELS = tuple(
-    dict.fromkeys(
-        (
-            YkPayment,
-            WataInvoice,
-            WataTransaction,
-            WebsitePaymentAttempt,
-            CpPayment,
-            EventLog,
-            *RECURRENT_CHAIN_MODELS,
-        )
-    )
+# — из common/autopay_chains.RECURRENT_CHAIN_MODELS: новая цепочка попадает
+# сюда сама. Таблицы ОПЛАТ нового шлюза — нет: их статусы «платил» и
+# недавняя активность (last_successful_payment, recent_payment_activity)
+# пишутся вручную. Гард — tests/test_rules.py::test_every_payment_table_is_a_fact:
+# новая платёжная таблица в common без разбора здесь роняет тесты.
+PAYMENT_FACT_MODELS = (
+    YkPayment,
+    WataInvoice,
+    WataTransaction,
+    WebsitePaymentAttempt,
+    CpPayment,
+    EventLog,
+    *RECURRENT_CHAIN_MODELS,
 )
 
 # Запросы на удаление аккаунта, при которых состояние считается

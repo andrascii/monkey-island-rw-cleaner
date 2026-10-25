@@ -703,3 +703,35 @@ def test_restored_ban_and_grace_do_not_block(session_factory):
         result = load_db_facts(s, snap("past"), NOW, 14)
     assert not result.squad_ban_active and not result.grace_active
     assert expired(snap("past"), result).candidate
+
+
+# Таблицы common, которые НЕ являются платёжными фактами пользователя:
+# tariff_payment_options — каталог способов оплаты тарифа, а не оплата.
+NOT_PAYMENT_FACT_TABLES = frozenset({"tariff_payment_options"})
+
+
+def _looks_like_payment_table(name: str) -> bool:
+    return any(part in name for part in ("pay", "wata", "recurrent", "invoice"))
+
+
+def test_every_payment_table_is_a_fact():
+    """Новый шлюз в common (например PayAnyWay: paw_payments) обязан быть
+    разобран в rw-cleaner: статусы «платил» (ступени never_*), недавняя
+    активность и проверка схемы. Иначе плательщик нового шлюза для
+    rw-cleaner «никогда не платил», и его истёкшая подписка удаляется."""
+    from common.models.db import Base
+    from rw_cleaner.rules import PAYMENT_FACT_MODELS
+
+    facts = {model.__tablename__ for model in PAYMENT_FACT_MODELS}
+    payment_like = {
+        name
+        for name in Base.metadata.tables
+        if _looks_like_payment_table(name) and name not in NOT_PAYMENT_FACT_TABLES
+    }
+    assert payment_like <= facts, sorted(payment_like - facts)
+
+
+def test_payment_fact_models_are_unique():
+    from rw_cleaner.rules import PAYMENT_FACT_MODELS
+
+    assert len(set(PAYMENT_FACT_MODELS)) == len(PAYMENT_FACT_MODELS)
